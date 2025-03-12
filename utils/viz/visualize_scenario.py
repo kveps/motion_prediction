@@ -1,6 +1,7 @@
 from matplotlib import cm
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
+from scipy.interpolate import interp1d
 
 import math
 import os
@@ -9,6 +10,7 @@ import time
 
 import numpy as np
 import tensorflow as tf
+import torch
 
 def create_figure_and_axes(size_pixels):
   """Initializes a unique figure and axes for plotting."""
@@ -235,3 +237,116 @@ def create_animation(images):
       fig, animate_func, frames=len(images) // 2, interval=100)
   plt.close(fig)
   return anim
+
+def visualize_scenario_image(scenario_tensor):
+  """ Visualize full scenario as a single image
+
+  Args:
+    scenario_tensor: Torch tensors containing all details of the scenario.
+  """ 
+
+  ################ Agents ################
+
+  # Past agent states
+  validity_past = scenario_tensor['state/past/valid'].bool()
+  valid_past_x = (scenario_tensor['state/past/x'])[validity_past]
+  valid_past_y = (scenario_tensor['state/past/y'])[validity_past]
+  # [num_agents, num_past_steps, 2] float32.
+  past_states = torch.cat(
+    (
+        valid_past_x.unsqueeze(dim=-1),
+        valid_past_y.unsqueeze(dim=-1),
+    ),
+    dim=-1
+  ).detach().cpu().numpy()
+
+  # Current agent states
+  validity_current = scenario_tensor['state/current/valid'].bool()
+  valid_current_x = (scenario_tensor['state/current/x'])[validity_current]
+  valid_current_y = (scenario_tensor['state/current/y'])[validity_current]
+  # [num_agents, num_current_steps, 2] float32.
+  current_states = torch.cat(
+    (
+        valid_current_x.unsqueeze(dim=-1),
+        valid_current_y.unsqueeze(dim=-1),
+    ),
+    dim=-1
+  ).detach().cpu().numpy()
+
+  # Future agent states
+  validity_future = scenario_tensor['state/future/valid'].bool()
+  valid_future_x = (scenario_tensor['state/future/x'])[validity_future]
+  valid_future_y = (scenario_tensor['state/future/y'])[validity_future]
+  # [num_agents, num_future_steps, 2] float32.
+  future_states = torch.cat(
+    (
+        valid_future_x.unsqueeze(dim=-1),
+        valid_future_y.unsqueeze(dim=-1),
+    ),
+    dim=-1
+  ).detach().cpu().numpy()
+
+  # Plot agent points
+  plt.plot(past_states[..., 0], past_states[..., 1], 'r.', markersize=3, label='Past Actor Points')
+  plt.plot(current_states[..., 0], current_states[..., 1], 'bo', markersize=4, label='Current Actor Point')
+  plt.plot(future_states[..., 0], future_states[..., 1], 'g.', markersize=3, label='Future Actor Points')
+
+  ################ Static road points ################
+
+  # Static road samples
+  # [num_points, 3] float32.
+  valid_road_samples = scenario_tensor['roadgraph_samples/valid'].squeeze(dim=1).bool()
+  valid_roadgraph_xyz = (scenario_tensor['roadgraph_samples/xyz'])[valid_road_samples].detach().cpu().numpy()
+
+  # Plot static road points
+  plt.plot(valid_roadgraph_xyz[..., 0], valid_roadgraph_xyz[..., 1], 'k.', markersize=0.5, label='Road Points')
+
+  ################ Dynamic Road points ################
+
+  # Past TL states
+  validity_tl_past = scenario_tensor['traffic_light_state/past/valid'].bool()
+  valid_tl_past_x = (scenario_tensor['traffic_light_state/past/x'])[validity_tl_past]
+  valid_tl_past_y = (scenario_tensor['traffic_light_state/past/y'])[validity_tl_past]
+  # [num_past_steps, num_tl_states] float32.
+  tl_past_states = torch.cat(
+    (
+        valid_tl_past_x.unsqueeze(dim=-1),
+        valid_tl_past_y.unsqueeze(dim=-1),
+    ),
+    dim=-1
+  ).detach().cpu().numpy()
+
+  # Current TL states
+  validity_tl_current = scenario_tensor['traffic_light_state/current/valid'].bool()
+  valid_tl_current_x = (scenario_tensor['traffic_light_state/current/x'])[validity_tl_current]
+  valid_tl_current_y = (scenario_tensor['traffic_light_state/current/y'])[validity_tl_current]
+  # [num_current_steps, num_tl_states] float32.
+  tl_current_states = torch.cat(
+    (
+        valid_tl_current_x.unsqueeze(dim=-1),
+        valid_tl_current_y.unsqueeze(dim=-1),
+    ),
+    dim=-1
+  ).detach().cpu().numpy()
+
+  # Plot Traffic light points
+  plt.plot(tl_past_states[..., 0], tl_past_states[..., 1], 'yo', markersize=7, label='Past TL states')
+  plt.plot(tl_current_states[..., 0], tl_current_states[..., 1], 'yo', markersize=7, label='Current TL states')
+
+  # Beautify
+
+  # Set limits
+  road_x_min = min(valid_roadgraph_xyz[..., 0])
+  road_x_max = max(valid_roadgraph_xyz[..., 0])
+  road_y_min = min(valid_roadgraph_xyz[..., 1])
+  road_y_max = max(valid_roadgraph_xyz[..., 1])
+  plt.xlim(road_x_min, road_x_max)
+  plt.ylim(road_y_min, road_y_max)
+
+  # Set plot
+  plt.xlabel('X')
+  plt.ylabel('Y')
+  plt.title('Road and Actor Visualization')
+  plt.axis('equal')  # Ensure equal scaling for x and y axes
+  plt.show()
+
