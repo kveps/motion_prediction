@@ -1,6 +1,6 @@
 import tensorflow as tf
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from utils.data.features_description import get_features_description
 from utils.viz.visualize_scenario import visualize_scenario_image
 from utils.data.data_processor import (
@@ -47,7 +47,8 @@ class RawMotionDataset(Dataset):
 
         return torch_element
 
+
 # Example usage:
-# directory_path = "./data/uncompressed/tf_example/training/"
-# motion_dataset = RawMotionDataset(directory_path)
-# visualize_scenario_image(motion_dataset[10])
+directory_path = "./data/uncompressed/tf_example/training/"
+motion_dataset = RawMotionDataset(directory_path)
+visualize_scenario_image(motion_dataset[10])
