@@ -1,10 +1,11 @@
+from IPython.core.display import HTML
+import tensorflow as tf
+from utils.data.features_description import get_features_description
 from utils.viz.visualize_scenario import (
     visualize_all_agents_smooth,
     create_animation,
 )
-import tensorflow as tf
-from IPython.core.display import display, HTML
-from utils.data.features_description import get_features_description
+
 
 def display_tf_example(file_path):
     fd = get_features_description()
@@ -23,9 +24,12 @@ def display_tf_example(file_path):
         print("File written to ./tmp/data.html, open it in the browser to see")
         file.write(data)
 
+
 def main():
-    file_path = input("enter tf example full file path (just hit enter if you want to use a default example): ")
+    file_path = input(
+        "enter tf example full file path (empty for default): ")
     display_tf_example(file_path)
+
 
 if __name__ == '__main__':
     main()

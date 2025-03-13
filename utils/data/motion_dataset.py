@@ -1,5 +1,4 @@
 import tensorflow as tf
-import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from utils.data.features_description import get_features_description
@@ -9,6 +8,7 @@ from utils.data.data_processor import (
     translate_parsed_dataset_to_av_center,
 )
 
+
 def _parse_function(example_proto):
     # Parse the input `tf.train.Example` proto using the dictionary above.
     fd = get_features_description()
@@ -16,6 +16,7 @@ def _parse_function(example_proto):
     # Translate the data points around the AV center i.e. AV is at origin
     transformed = translate_parsed_dataset_to_av_center(parsed)
     return transformed
+
 
 class RawMotionDataset(Dataset):
     def __init__(self, data_path):
@@ -41,11 +42,12 @@ class RawMotionDataset(Dataset):
         numpy_element = {key: value.numpy() for key, value in element.items()}
 
         # Convert NumPy arrays to PyTorch tensors
-        torch_element = {key: torch.tensor(value) for key, value in numpy_element.items()}
+        torch_element = {key: torch.tensor(value)
+                         for key, value in numpy_element.items()}
 
         return torch_element
 
 # Example usage:
-# directory_path = "./data/uncompressed/tf_example/training/" 
+# directory_path = "./data/uncompressed/tf_example/training/"
 # motion_dataset = RawMotionDataset(directory_path)
 # visualize_scenario_image(motion_dataset[10])

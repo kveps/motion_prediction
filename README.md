@@ -1,1 +1,1 @@
-An intelligent motion prediction system 
+AV motion prediction model
