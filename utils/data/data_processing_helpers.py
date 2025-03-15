@@ -26,20 +26,20 @@ def get_data_file_names(dir_path):
 
 def translate_parsed_dataset_to_av_center(tf_dataset):
     """
-    Translates all spatial features in the dataset such that the autonomous vehicle (AV) 
+    Translates all spatial features in the dataset such that the autonomous vehicle (AV)
     is centered at the origin.
 
-    This function adjusts the positions of agents, roadgraph, and traffic light states 
-    relative to the AV's last known current position. The resulting transformation ensures 
+    This function adjusts the positions of agents, roadgraph, and traffic light states
+    relative to the AV's last known current position. The resulting transformation ensures
     that the AV is at the origin (0, 0, 0) in the coordinate system.
 
     Args:
-        tf_dataset (dict): A dictionary containing TensorFlow tensors of various 
-                           features including agent states, roadgraph, and traffic 
+        tf_dataset (dict): A dictionary containing TensorFlow tensors of various
+                           features including agent states, roadgraph, and traffic
                            light states.
 
     Returns:
-        dict: A new dictionary with the same keys as `tf_dataset`, but with 
+        dict: A new dictionary with the same keys as `tf_dataset`, but with
               translated spatial features.
     """
 
@@ -107,15 +107,15 @@ def translate_parsed_dataset_to_av_center(tf_dataset):
     return transformed
 
 
-def downsample_roadgraph(torch_dataset_element):
+def downsample_roadgraph(tf_dataset):
     """
-    Downsample the roadgraph of a given dataset element.
+    Downsample the roadgraph of a given tf dataset.
 
     Selects every NUM_POINTS_TO_FILTER'th point in the roadgraph, and returns
     a new dictionary with these points.
 
     Args:
-        torch_dataset_element (dict): A PyTorch dataset element, containing
+        tf_dataset (dict): A tf dataset element, containing
         the roadgraph and other data.
 
     Returns:
@@ -124,14 +124,178 @@ def downsample_roadgraph(torch_dataset_element):
     NUM_POINTS_TO_FILTER = 5
     filtered = {}  # Create a new dictionary
 
-    for key, value in torch_dataset_element.items():
+    for key, value in tf_dataset.items():
         # Downsample the roadgraph
         if 'roadgraph_samples/' in key:
-            # Create a boolean mask to select every 10th row
-            mask = torch.arange(value.shape[0]) % NUM_POINTS_TO_FILTER == 0
+            # Create a boolean mask to select every nth row
+            mask = tf.range(value.shape[0]) % NUM_POINTS_TO_FILTER == 0
             # Apply the mask to the tensor
             filtered[key] = value[mask]
         else:
             filtered[key] = value  # Copy unchanged tensors
 
     return filtered
+
+
+def arrange_static_roadgraph_model_input(torch_dataset_element):
+    """
+    Arrange the model input for the static roadgraph model.
+
+    Args:
+        torch_dataset_element (dict): A PyTorch dataset element, containing
+        the roadgraph and other data.
+
+    Returns:
+        tuple: A tuple containing the static roadgraph model input and the
+        valid flag for each map sample.
+    """
+    # [num_map_samples, 1]
+    roadgraph_samples_valid = torch_dataset_element['roadgraph_samples/valid']
+    roadgraph_samples_x = torch_dataset_element['roadgraph_samples/xyz'][:, 0].unsqueeze(
+        dim=-1) * roadgraph_samples_valid
+    roadgraph_samples_y = torch_dataset_element['roadgraph_samples/xyz'][:, 1].unsqueeze(
+        dim=-1) * roadgraph_samples_valid
+    roadgraph_samples_dir_z = torch_dataset_element['roadgraph_samples/dir'][:, 2].unsqueeze(
+        dim=-1) * roadgraph_samples_valid
+    roadgraph_samples_type = torch_dataset_element['roadgraph_samples/type'] * \
+        roadgraph_samples_valid
+    # [num_map_samples, 4]
+    static_roadgraph_input = torch.cat(
+        (roadgraph_samples_x, roadgraph_samples_y,
+            roadgraph_samples_dir_z, roadgraph_samples_type), dim=-1
+    )
+
+    return static_roadgraph_input, roadgraph_samples_valid
+
+
+def arrange_dynamic_roadgraph_model_input(torch_dataset_element):
+    """
+    Arrange the model input for the dynamic roadgraph model.
+
+    Args:
+        torch_dataset_element (dict): A PyTorch dataset element, containing
+        the roadgraph and other data.
+
+    Returns:
+        tuple: A tuple containing the dynamic roadgraph model input and the
+        valid flag for each map sample.
+    """
+    # [num_tl_states, num_past_states + num_current_states]
+    traffic_light_input_states_valid = torch.cat(
+        (torch_dataset_element['traffic_light_state/past/valid'].swapaxes(0, 1),
+            torch_dataset_element['traffic_light_state/current/valid'].swapaxes(0, 1)), dim=-1
+    )
+    traffic_light_input_states_x = torch.cat(
+        (torch_dataset_element['traffic_light_state/past/x'].swapaxes(0, 1),
+            torch_dataset_element['traffic_light_state/current/x'].swapaxes(0, 1)), dim=-1
+    ) * traffic_light_input_states_valid
+    traffic_light_input_states_y = torch.cat(
+        (torch_dataset_element['traffic_light_state/past/y'].swapaxes(0, 1),
+            torch_dataset_element['traffic_light_state/current/y'].swapaxes(0, 1)), dim=-1
+    ) * traffic_light_input_states_valid
+    traffic_light_input_states_state = torch.cat(
+        (torch_dataset_element['traffic_light_state/past/state'].swapaxes(0, 1),
+            torch_dataset_element['traffic_light_state/current/state'].swapaxes(0, 1)), dim=-1
+    ) * traffic_light_input_states_valid
+    # [num_tl_states, num_past_states + num_current_states, 3]
+    dynamic_roadgraph_input = torch.cat(
+        (traffic_light_input_states_x.unsqueeze(dim=-1),
+         traffic_light_input_states_y.unsqueeze(dim=-1),
+         traffic_light_input_states_state.unsqueeze(dim=-1)), dim=-1
+    )
+
+    return dynamic_roadgraph_input, traffic_light_input_states_valid
+
+
+def arrange_agent_model_input(torch_dataset_element):
+    """
+    Arrange the model input for the agent model.
+
+    Args:
+        torch_dataset_element (dict): A PyTorch dataset element, containing
+        the agent and other data.
+
+    Returns:
+        tuple: A tuple containing the agent model input and the
+        valid flag for each agent.
+    """
+    # [num_agents, num_past_states + num_current_states, 1]
+    agent_input_states_valid = torch.cat(
+        (torch_dataset_element['state/past/valid'],
+         torch_dataset_element['state/current/valid']), dim=-1
+    )
+    agent_input_states_x = torch.cat(
+        (torch_dataset_element['state/past/x'],
+         torch_dataset_element['state/current/x']), dim=-1
+    ) * agent_input_states_valid
+    agent_input_states_y = torch.cat(
+        (torch_dataset_element['state/past/y'],
+         torch_dataset_element['state/current/y']), dim=-1
+    ) * agent_input_states_valid
+    agent_input_states_bbox_yaw = torch.cat(
+        (torch_dataset_element['state/past/bbox_yaw'],
+         torch_dataset_element['state/current/bbox_yaw']), dim=-1
+    ) * agent_input_states_valid
+    agent_input_states_velocity_x = torch.cat(
+        (torch_dataset_element['state/past/velocity_x'],
+         torch_dataset_element['state/current/velocity_x']), dim=-1
+    ) * agent_input_states_valid
+    agent_input_states_velocity_y = torch.cat(
+        (torch_dataset_element['state/past/velocity_y'],
+         torch_dataset_element['state/current/velocity_y']), dim=-1
+    ) * agent_input_states_valid
+    agent_input_states_vel_yaw = torch.cat(
+        (torch_dataset_element['state/past/vel_yaw'],
+         torch_dataset_element['state/current/vel_yaw']), dim=-1
+    ) * agent_input_states_valid
+    agent_input_states_lenght = torch.cat(
+        (torch_dataset_element['state/past/length'],
+         torch_dataset_element['state/current/length']), dim=-1
+    ) * agent_input_states_valid
+    agent_input_states_width = torch.cat(
+        (torch_dataset_element['state/past/width'],
+         torch_dataset_element['state/current/width']), dim=-1
+    ) * agent_input_states_valid
+
+    # [num_agents, num_past_states + num_current_states, 8]
+    agent_input = torch.cat(
+        (agent_input_states_x.unsqueeze(dim=-1),
+         agent_input_states_y.unsqueeze(dim=-1),
+         agent_input_states_bbox_yaw.unsqueeze(dim=-1),
+         agent_input_states_velocity_x.unsqueeze(
+            dim=-1), agent_input_states_velocity_y.unsqueeze(dim=-1),
+         agent_input_states_vel_yaw.unsqueeze(dim=-1),
+         agent_input_states_lenght.unsqueeze(
+            dim=-1), agent_input_states_width.unsqueeze(dim=-1)), dim=-1
+    )
+
+    return agent_input, agent_input_states_valid
+
+
+def arrange_agent_model_target(torch_dataset_element):
+    """
+    Arrange the model target for the agent model.
+
+    Args:
+        torch_dataset_element (dict): A PyTorch dataset element, containing
+        the agent and other data.
+
+    Returns:
+        tuple: A tuple containing the agent model target and the
+        valid flag for each agent.
+    """
+    # [num_agents, num_future_states, 1]
+    agent_target_states_valid = torch_dataset_element['state/future/valid']
+    agent_target_states_x = torch_dataset_element['state/future/x'] * \
+        agent_target_states_valid
+    agent_target_states_y = torch_dataset_element['state/future/y'] * \
+        agent_target_states_valid
+    agent_target_states_bbox_yaw = torch_dataset_element['state/future/bbox_yaw'] * \
+        agent_target_states_valid
+    # [num_agents, num_future_states, 3]
+    agent_target = torch.cat(
+        (agent_target_states_x.unsqueeze(dim=-1), agent_target_states_y.unsqueeze(dim=-1),
+         agent_target_states_bbox_yaw.unsqueeze(dim=-1)), dim=-1
+    )
+
+    return agent_target, agent_target_states_valid
