@@ -49,12 +49,11 @@ criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.01)
 
 # Training Loop
-epochs = 100
+epochs = 1
 for epoch in range(epochs):
     # Training
     model.train()  # Set model to training mode
     train_loss = 0.0
-    train_item = 0
     for dataset_element in training_dataloader:
         agent_input, static_roadgraph_input, dynamic_roadgraph_input, agent_target, agent_target_states_valid = dataset_element
         optimizer.zero_grad()
@@ -70,7 +69,6 @@ for epoch in range(epochs):
         loss.backward()
         optimizer.step()
         train_loss += loss.item()
-        train_item += 1
 
     avg_train_loss = train_loss / len(training_dataloader)
 
