@@ -71,7 +71,6 @@ for epoch in range(epochs):
         optimizer.step()
         train_loss += loss.item()
         train_item += 1
-        print("Training item: ", train_item, "Running loss: ", loss.item())
 
     avg_train_loss = train_loss / len(training_dataloader)
 
