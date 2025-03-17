@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F  # For softmax
 
 
 class LSTM_NN(nn.Module):
@@ -10,9 +11,11 @@ class LSTM_NN(nn.Module):
                  static_roadgraph_hidden_size,
                  dynamic_roadgraph_hidden_size,
                  num_future_features,
+                 num_future_trajectories,
                  num_future_timesteps):
         super(LSTM_NN, self).__init__()
 
+        self.num_future_trajectories = num_future_trajectories
         self.future_timesteps = num_future_timesteps
 
         # Agent LSTM layer
@@ -36,9 +39,12 @@ class LSTM_NN(nn.Module):
             dynamic_roadgraph_hidden_size, agent_hidden_size)
         self.combined_relu = nn.ReLU()
 
-        # Future Timestep Prediction
-        self.future_fc = nn.Linear(
-            agent_hidden_size, num_future_features * num_future_timesteps)
+        # Trajectory Prediction
+        self.trajectory_fc = nn.Linear(
+            agent_hidden_size, num_future_features * num_future_timesteps * num_future_trajectories)
+
+        # Trajectory Probability Prediction
+        self.prob_fc = nn.Linear(agent_hidden_size, num_future_trajectories)
 
     def forward(self, agents, static_road, dynamic_road):
         batch_size, num_agents, num_timesteps, _ = agents.size()
@@ -91,11 +97,14 @@ class LSTM_NN(nn.Module):
         combined = self.combined_relu(combined)
 
         # Future Timestep Prediction
-        # [batch_size, num_agents, num_future_features * num_future_timesteps]
-        output = self.future_fc(combined)
+        # [batch_size, num_agents, num_future_features * num_future_timesteps * num_trajectories]
+        trajectories = self.trajectory_fc(combined)
+        trajectories = trajectories.view(
+            batch_size, num_agents, self.num_future_trajectories, self.future_timesteps, -1)
 
-        # [batch_size, num_agents, num_future_timesteps, num_future_features]
-        output = output.view(batch_size, num_agents, self.future_timesteps,
-                             -1)
+        # Future Timestep Probability Prediction
+        # [batch_size, num_agents, num_trajectories]
+        probs = self.prob_fc(combined)
+        probs = F.softmax(probs, dim=-1)
 
-        return output
+        return trajectories, probs

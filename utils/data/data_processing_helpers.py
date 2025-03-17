@@ -248,13 +248,16 @@ def arrange_agent_model_input(torch_dataset_element):
         (torch_dataset_element['state/past/vel_yaw'],
          torch_dataset_element['state/current/vel_yaw']), dim=-1
     ) * agent_input_states_valid
-    agent_input_states_lenght = torch.cat(
+    agent_input_states_length = torch.cat(
         (torch_dataset_element['state/past/length'],
          torch_dataset_element['state/current/length']), dim=-1
     ) * agent_input_states_valid
     agent_input_states_width = torch.cat(
         (torch_dataset_element['state/past/width'],
          torch_dataset_element['state/current/width']), dim=-1
+    ) * agent_input_states_valid
+    agent_input_states_type = (torch_dataset_element['state/type'].unsqueeze(dim=-1)).expand_as(
+        agent_input_states_valid
     ) * agent_input_states_valid
 
     # [num_agents, num_past_states + num_current_states, 8]
@@ -265,8 +268,9 @@ def arrange_agent_model_input(torch_dataset_element):
          agent_input_states_velocity_x.unsqueeze(
             dim=-1), agent_input_states_velocity_y.unsqueeze(dim=-1),
          agent_input_states_vel_yaw.unsqueeze(dim=-1),
-         agent_input_states_lenght.unsqueeze(
-            dim=-1), agent_input_states_width.unsqueeze(dim=-1)), dim=-1
+         agent_input_states_length.unsqueeze(
+            dim=-1), agent_input_states_width.unsqueeze(dim=-1),
+         agent_input_states_type.unsqueeze(dim=-1)), dim=-1
     )
 
     return agent_input, agent_input_states_valid

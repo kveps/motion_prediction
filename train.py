@@ -1,3 +1,4 @@
+from models.loss import trajectory_prediction_multi_modal_loss
 from models.lstm import LSTM_NN
 from utils.data.motion_dataset import FilteredMotionDataset
 from utils.viz.visualize_scenario import visualize_model_inputs_and_output
@@ -36,6 +37,7 @@ num_static_roadgraph_features = static_roadgraph_input.size(dim=-1)
 num_dynamic_roadgraph_features = dynamic_roadgraph_input.size(dim=-1)
 num_future_features = agent_target.size(dim=-1)
 num_future_timesteps = agent_target.size(dim=-2)
+num_future_trajectoiries = 4
 agent_hidden_size = 32
 static_roadgraph_hidden_size = 64
 dynamic_roadgraph_hidden_size = 32
@@ -47,18 +49,19 @@ model = LSTM_NN(num_agent_features=num_agent_features,
                 static_roadgraph_hidden_size=static_roadgraph_hidden_size,
                 dynamic_roadgraph_hidden_size=dynamic_roadgraph_hidden_size,
                 num_future_features=num_future_features,
+                num_future_trajectories=num_future_trajectoiries,
                 num_future_timesteps=num_future_timesteps)
 
-# Loss and Optimizer
-criterion = nn.MSELoss()
+# Optimizer
 optimizer = optim.Adam(model.parameters(), lr=0.01)
 
-TRAINING_MODE = False
+# Config
+TRAINING_MODE = True
+NUM_EPOCHS = 100
 
 if TRAINING_MODE:
     # Training Loop
-    epochs = 100
-    for epoch in range(epochs):
+    for epoch in range(NUM_EPOCHS):
         # Training
         model.train()  # Set model to training mode
         train_loss = 0.0
@@ -71,15 +74,10 @@ if TRAINING_MODE:
             agent_target_valid = dataset_element['agent_target_valid']
 
             optimizer.zero_grad()
-            outputs = model(agent_input, static_roadgraph_input,
-                            dynamic_roadgraph_input)
-            # Mask the outputs where the agent_target_valid is 0
-            outputs = torch.where(
-                agent_target_valid.unsqueeze(dim=-1) == 0,
-                torch.ones_like(agent_target),
-                outputs,
-            )
-            loss = criterion(outputs, agent_target)
+            trajectories, probs = model(agent_input, static_roadgraph_input,
+                                        dynamic_roadgraph_input)
+            loss = trajectory_prediction_multi_modal_loss(
+                trajectories, probs, agent_target, agent_target_valid)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
@@ -99,21 +97,16 @@ if TRAINING_MODE:
                 agent_target_valid = dataset_element['agent_target_valid']
 
                 optimizer.zero_grad()
-                outputs = model(agent_input, static_roadgraph_input,
-                                dynamic_roadgraph_input)
-                # Mask the outputs where the agent_target_valid is 0
-                outputs = torch.where(
-                    agent_target_valid.unsqueeze(dim=-1) == 0,
-                    torch.ones_like(agent_target),
-                    outputs,
-                )
-                loss = criterion(outputs, agent_target)
+                trajectories, probs = model(agent_input, static_roadgraph_input,
+                                            dynamic_roadgraph_input)
+                loss = trajectory_prediction_multi_modal_loss(
+                    trajectories, probs, agent_target, agent_target_valid)
                 val_loss += loss.item()
 
         avg_val_loss = val_loss / len(validation_dataloader)
 
         print(
-            f'Epoch [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
+            f'Epoch [{epoch+1}/{NUM_EPOCHS}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
 
         now = datetime.datetime.now()
         path = "./models/trained_weights/lstm_model_" + \
@@ -136,14 +129,16 @@ else:
             tracks_to_predict = dataset_element['tracks_to_predict']
 
             optimizer.zero_grad()
-            outputs = model(agent_input, static_roadgraph_input,
-                            dynamic_roadgraph_input)
-            loss = criterion(outputs, agent_target)
+            trajectories, probs = model(agent_input, static_roadgraph_input,
+                                        dynamic_roadgraph_input)
+            loss = trajectory_prediction_multi_modal_loss(
+                trajectories, probs, agent_target, agent_target_valid)
             test_loss += loss.item()
 
             # Visualize the model inputs and outputs
             model_output = {
-                'agent_output': outputs
+                'agent_trajs': trajectories,
+                'agent_probs': probs,
             }
             visualize_model_inputs_and_output(
                 dataset_element, model_output)

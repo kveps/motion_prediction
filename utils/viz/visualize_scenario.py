@@ -405,15 +405,21 @@ def visualize_model_inputs_and_output(model_input, model_output,
 
     # Model ouput agent states
     tracks_to_predict = model_input['tracks_to_predict'][index_in_batch]
+    # [num_agents, num_future_trajectories, num_timesteps, 3] float32.
+    agent_trajs = model_output['agent_trajs'][index_in_batch, ...]
+    # [num_agents, num_future_trajectories] float32.
+    agent_probs = model_output['agent_probs'][index_in_batch, ...]
+    # [num_agents].
+    agent_highest_prob_traj = torch.argmax(agent_probs, dim=-1)
     # [num_agents, num_timesteps, 1] float32.
-    agent_output_x = (model_output['agent_output']
-                      [index_in_batch, tracks_to_predict, :, 0])
-    agent_output_y = (model_output['agent_output']
-                      [index_in_batch, tracks_to_predict, :, 1])
+    agent_output_x = (
+        agent_trajs[tracks_to_predict, agent_highest_prob_traj, :, 0])
+    agent_output_y = (
+        agent_trajs[tracks_to_predict, agent_highest_prob_traj, :, 1])
 
     # Plot agent output points
     plt.plot(agent_output_x, agent_output_y,
-             'y.', markersize=3, label='Model output Points')
+             'b.', markersize=3, label='Model output points of the highest prob trajectory')
 
     ################ Static road points ################
 
@@ -428,6 +434,8 @@ def visualize_model_inputs_and_output(model_input, model_output,
     # Plot static road points
     plt.plot(static_roadgraph_x, static_roadgraph_y,
              'k.', markersize=0.5, label='Road Points')
+
+    # TODO: Add dynamic roadgraph (traffic light) points
 
     # Beautify
 
