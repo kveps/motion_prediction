@@ -54,24 +54,31 @@ class FilteredMotionDataset(Dataset):
                          for key, value in numpy_element.items()}
 
         # Static roadgraph
-        static_roadgraph_input, _ = arrange_static_roadgraph_model_input(
+        static_roadgraph_input, static_roadgraph_valid = arrange_static_roadgraph_model_input(
             torch_element)
         # Dynamic roadgraph
-        dynamic_roadgraph_input, _ = arrange_dynamic_roadgraph_model_input(
+        dynamic_roadgraph_input, dynamic_roadgraph_valid = arrange_dynamic_roadgraph_model_input(
             torch_element)
         # Agent states
-        agent_input, _ = arrange_agent_model_input(
+        agent_input, agent_input_valid = arrange_agent_model_input(
             torch_element)
         # Agent targets
-        agent_target, agent_target_states_valid = arrange_agent_model_target(
+        agent_target, agent_target_valid = arrange_agent_model_target(
             torch_element)
+        # Tracks to predict
+        tracks_to_predict = torch_element['state/tracks_to_predict']
 
-        return (agent_input,
-                static_roadgraph_input,
-                dynamic_roadgraph_input,
-                agent_target,
-                agent_target_states_valid,
-                )
+        return {
+            'static_roadgraph_input': static_roadgraph_input,
+            'static_roadgraph_valid': static_roadgraph_valid,
+            'dynamic_roadgraph_input': dynamic_roadgraph_input,
+            'dynamic_roadgraph_valid': dynamic_roadgraph_valid,
+            'agent_input': agent_input,
+            'agent_input_valid': agent_input_valid,
+            'agent_target': agent_target,
+            'agent_target_valid': agent_target_valid,
+            'tracks_to_predict': tracks_to_predict,
+        }
 
     def get_full_torch_element(self, idx):
         # Take the element at the given index

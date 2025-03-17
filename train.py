@@ -1,5 +1,6 @@
 from models.lstm import LSTM_NN
 from utils.data.motion_dataset import FilteredMotionDataset
+from utils.viz.visualize_scenario import visualize_model_inputs_and_output
 from torch.utils.data import DataLoader
 import torch
 import torch.nn as nn
@@ -19,12 +20,16 @@ validation_dataloader = DataLoader(
     validation_dataset, batch_size=32, shuffle=False)
 # Testing
 test_dataset = FilteredMotionDataset("./data/uncompressed/tf_example/testing/")
-test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 
 # Setup necessary input sizes for the model
-agent_input, static_roadgraph_input, dynamic_roadgraph_input, agent_target, agent_target_states_valid = training_dataset[
-    0]
+dummy_element = training_dataset[0]
+agent_input = dummy_element['agent_input']
+static_roadgraph_input = dummy_element['static_roadgraph_input']
+dynamic_roadgraph_input = dummy_element['dynamic_roadgraph_input']
+agent_target = dummy_element['agent_target']
+agent_target_valid = dummy_element['agent_target_valid']
 
 num_agent_features = agent_input.size(dim=-1)
 num_static_roadgraph_features = static_roadgraph_input.size(dim=-1)
@@ -48,54 +53,101 @@ model = LSTM_NN(num_agent_features=num_agent_features,
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.01)
 
-# Training Loop
-epochs = 1
-for epoch in range(epochs):
-    # Training
-    model.train()  # Set model to training mode
-    train_loss = 0.0
-    for dataset_element in training_dataloader:
-        agent_input, static_roadgraph_input, dynamic_roadgraph_input, agent_target, agent_target_states_valid = dataset_element
-        optimizer.zero_grad()
-        outputs = model(agent_input, static_roadgraph_input,
-                        dynamic_roadgraph_input)
-        # Mask the outputs where the agent_target_states_valid is 0
-        outputs = torch.where(
-            agent_target_states_valid.unsqueeze(dim=-1) == 0,
-            torch.ones_like(agent_target),
-            outputs,
-        )
-        loss = criterion(outputs, agent_target)
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.item()
+TRAINING_MODE = False
 
-    avg_train_loss = train_loss / len(training_dataloader)
+if TRAINING_MODE:
+    # Training Loop
+    epochs = 100
+    for epoch in range(epochs):
+        # Training
+        model.train()  # Set model to training mode
+        train_loss = 0.0
+        for dataset_element in training_dataloader:
+            # fetch inputs
+            agent_input = dataset_element['agent_input']
+            static_roadgraph_input = dataset_element['static_roadgraph_input']
+            dynamic_roadgraph_input = dataset_element['dynamic_roadgraph_input']
+            agent_target = dataset_element['agent_target']
+            agent_target_valid = dataset_element['agent_target_valid']
 
-    # Validation
-    model.eval()  # Set model to evaluation mode
-    val_loss = 0.0
-    with torch.no_grad():
-        for dataset_element in validation_dataloader:
-            agent_input, static_roadgraph_input, dynamic_roadgraph_input, agent_target, agent_target_states_valid = dataset_element
             optimizer.zero_grad()
             outputs = model(agent_input, static_roadgraph_input,
                             dynamic_roadgraph_input)
-            # Mask the outputs where the agent_target_states_valid is 0
+            # Mask the outputs where the agent_target_valid is 0
             outputs = torch.where(
-                agent_target_states_valid.unsqueeze(dim=-1) == 0,
+                agent_target_valid.unsqueeze(dim=-1) == 0,
                 torch.ones_like(agent_target),
                 outputs,
             )
             loss = criterion(outputs, agent_target)
-            val_loss += loss.item()
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
 
-    avg_val_loss = val_loss / len(validation_dataloader)
+        avg_train_loss = train_loss / len(training_dataloader)
 
-    print(
-        f'Epoch [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
+        # Validation
+        model.eval()  # Set model to evaluation mode
+        val_loss = 0.0
+        with torch.no_grad():
+            for dataset_element in validation_dataloader:
+                # fetch inputs
+                agent_input = dataset_element['agent_input']
+                static_roadgraph_input = dataset_element['static_roadgraph_input']
+                dynamic_roadgraph_input = dataset_element['dynamic_roadgraph_input']
+                agent_target = dataset_element['agent_target']
+                agent_target_valid = dataset_element['agent_target_valid']
 
-now = datetime.datetime.now()
-path = "./models/trained_weights/lstm_model_" + \
-    now.strftime("%Y-%m-%d %H:%M:%S") + ".pt"
-torch.save(model.state_dict(), path)
+                optimizer.zero_grad()
+                outputs = model(agent_input, static_roadgraph_input,
+                                dynamic_roadgraph_input)
+                # Mask the outputs where the agent_target_valid is 0
+                outputs = torch.where(
+                    agent_target_valid.unsqueeze(dim=-1) == 0,
+                    torch.ones_like(agent_target),
+                    outputs,
+                )
+                loss = criterion(outputs, agent_target)
+                val_loss += loss.item()
+
+        avg_val_loss = val_loss / len(validation_dataloader)
+
+        print(
+            f'Epoch [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
+
+        now = datetime.datetime.now()
+        path = "./models/trained_weights/lstm_model_" + \
+            str(epoch + 1) + "_" + now.strftime("%Y-%m-%d %H:%M:%S") + ".pt"
+        torch.save(model.state_dict(), path)
+else:
+    # Testing
+    model_path = "./models/trained_weights/lstm_model_17_2025-03-16 13:32:17.pt"
+    model.load_state_dict(torch.load(model_path))
+    model.eval()  # Set model to evaluation mode
+    test_loss = 0.0
+    with torch.no_grad():
+        for dataset_element in test_dataloader:
+            # fetch inputs
+            agent_input = dataset_element['agent_input']
+            static_roadgraph_input = dataset_element['static_roadgraph_input']
+            dynamic_roadgraph_input = dataset_element['dynamic_roadgraph_input']
+            agent_target = dataset_element['agent_target']
+            agent_target_valid = dataset_element['agent_target_valid']
+            tracks_to_predict = dataset_element['tracks_to_predict']
+
+            optimizer.zero_grad()
+            outputs = model(agent_input, static_roadgraph_input,
+                            dynamic_roadgraph_input)
+            loss = criterion(outputs, agent_target)
+            test_loss += loss.item()
+
+            # Visualize the model inputs and outputs
+            model_output = {
+                'agent_output': outputs
+            }
+            visualize_model_inputs_and_output(
+                dataset_element, model_output)
+
+    avg_test_loss = test_loss / len(test_dataloader)
+
+    print(f'Test Loss: {avg_test_loss:.4f}')

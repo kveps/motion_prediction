@@ -364,3 +364,84 @@ def visualize_scenario_image(scenario_tensor):
     plt.title('Road and Actor Visualization')
     plt.axis('equal')  # Ensure equal scaling for x and y axes
     plt.show()
+
+
+def visualize_model_inputs_and_output(model_input, model_output,
+                                      index_in_batch=0):
+    """ Visualize model input and output as a single image
+
+    Args:
+        model_input (dict): A dictionary containing the model input.
+        model_output (dict): A dictionary containing the model output.
+        index_in_batch (int): The index of the batch to visualize
+    """
+    ############### Agents input ################
+
+    # Past and current agent states
+    # [num_agents, num_timesteps, 1] float32.
+    agent_input_valid = model_input['agent_input_valid'][index_in_batch, :, :].bool(
+    )
+    agent_input_x = (model_input['agent_input'][index_in_batch, :, :, 0])[
+        agent_input_valid]
+    agent_input_y = (model_input['agent_input'][index_in_batch, :, :, 1])[
+        agent_input_valid]
+
+    # Target agent states
+    # [num_agents, num_timesteps, 1] float32.
+    agent_target_valid = model_input['agent_target_valid'][index_in_batch, :, :].bool(
+    )
+    agent_target_x = (model_input['agent_target'][index_in_batch, :, :, 0])[
+        agent_target_valid]
+    agent_target_y = (model_input['agent_target'][index_in_batch, :, :, 1])[
+        agent_target_valid]
+
+    # Plot agent input and target points
+    plt.plot(agent_input_x, agent_input_y,
+             'r.', markersize=3, label='Agent Points')
+    plt.plot(agent_target_x, agent_target_y,
+             'g.', markersize=3, label='Future Agent Points')
+
+    ############### Agents output ################
+
+    # Model ouput agent states
+    tracks_to_predict = model_input['tracks_to_predict'][index_in_batch]
+    # [num_agents, num_timesteps, 1] float32.
+    agent_output_x = (model_output['agent_output']
+                      [index_in_batch, tracks_to_predict, :, 0])
+    agent_output_y = (model_output['agent_output']
+                      [index_in_batch, tracks_to_predict, :, 1])
+
+    # Plot agent output points
+    plt.plot(agent_output_x, agent_output_y,
+             'y.', markersize=3, label='Model output Points')
+
+    ################ Static road points ################
+
+    # Static road samples
+    roadsamples_valid = model_input['static_roadgraph_valid'][index_in_batch, :, 0].bool(
+    )
+    static_roadgraph_x = model_input['static_roadgraph_input'][index_in_batch,
+                                                               :, 0][roadsamples_valid]
+    static_roadgraph_y = model_input['static_roadgraph_input'][index_in_batch,
+                                                               :, 1][roadsamples_valid]
+
+    # Plot static road points
+    plt.plot(static_roadgraph_x, static_roadgraph_y,
+             'k.', markersize=0.5, label='Road Points')
+
+    # Beautify
+
+    # Set limits
+    road_x_min = min(static_roadgraph_x)
+    road_x_max = max(static_roadgraph_x)
+    road_y_min = min(static_roadgraph_y)
+    road_y_max = max(static_roadgraph_y)
+    plt.xlim(road_x_min, road_x_max)
+    plt.ylim(road_y_min, road_y_max)
+
+    # Set plot
+    plt.xlabel('X')
+    plt.ylabel('Y')
+    plt.title('Road and Actor Visualization')
+    plt.axis('equal')  # Ensure equal scaling for x and y axes
+    plt.show()
