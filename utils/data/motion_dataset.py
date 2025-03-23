@@ -2,11 +2,14 @@ import tensorflow as tf
 import torch
 from torch.utils.data import Dataset
 from utils.data.features_description import get_features_description
-from utils.viz.visualize_scenario import visualize_polylines
+from utils.viz.visualize_scenario import (
+    visualize_polylines,
+    visualize_scenario_image,
+)
 from utils.data.data_processing_helpers import (
     downsample_roadgraph,
     get_data_file_names,
-    translate_parsed_dataset_to_av_center,
+    transform_parsed_dataset_to_av_frame,
     arrange_agent_model_input,
     arrange_agent_model_target,
     arrange_dynamic_roadgraph_model_input,
@@ -20,7 +23,7 @@ def _parse_function(example_proto):
     fd = get_features_description()
     parsed = tf.io.parse_single_example(example_proto, fd)
     # Translate the data points around the AV center i.e. AV is at origin
-    transformed = translate_parsed_dataset_to_av_center(parsed)
+    transformed = transform_parsed_dataset_to_av_frame(parsed)
     # Downsample the roadgraph
     # TODO: Do more intelligent filtering of the data
     filtered = downsample_roadgraph(transformed)
@@ -169,8 +172,12 @@ class TransformerMotionDataset(Dataset):
         return self.parsed_tf_dataset
 
 
+directory_path = "./data/uncompressed/tf_example/training/"
+motion_dataset = LSTMMotionDataset(directory_path)
+visualize_scenario_image(motion_dataset.get_full_torch_element(20))
+
 # directory_path = "./data/uncompressed/tf_example/training/"
 # motion_dataset = TransformerMotionDataset(directory_path)
 # map_polyline, validity = arrange_static_roadgraph_polyline_model_input(
-#     motion_dataset.get_full_torch_element(30))
+#     motion_dataset.get_full_torch_element(20))
 # visualize_polylines(map_polyline, validity)

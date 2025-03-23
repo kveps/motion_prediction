@@ -107,6 +107,76 @@ def translate_parsed_dataset_to_av_center(tf_dataset):
     return transformed
 
 
+def transform_parsed_dataset_to_av_frame(tf_dataset):
+    """
+    Transforms all relevant features to the AV's frame of reference.
+
+    Args:
+        tf_dataset: A dictionary of tensors representing the various features.
+
+    Returns:
+        A dictionary of tensors with tf_dataset transformed to the AV frame.
+    """
+
+    transformed = {}  # Create a new dictionary
+
+    # Get AV index in the set of agents
+    av_idx = 0
+    for i in range(tf_dataset['state/current/x'].shape[0]):
+        if tf_dataset['state/is_sdc'][i] == 1:
+            av_idx = i
+    assert (av_idx is not None)
+
+    # Set AV center and yaw
+    num_current_states = tf_dataset['state/current/x'].shape[1]
+    av_center_x = tf_dataset['state/current/x'][av_idx,
+                                                num_current_states - 1]
+    av_center_y = tf_dataset['state/current/y'][av_idx,
+                                                num_current_states - 1]
+    av_yaw = tf_dataset['state/current/bbox_yaw'][av_idx,
+                                                  num_current_states - 1]
+
+    # Compute the rotation matrix
+    cos_yaw = tf.cos(-av_yaw)
+    sin_yaw = tf.sin(-av_yaw)
+    rotation_matrix = tf.reshape(
+        tf.stack([cos_yaw, -sin_yaw, sin_yaw, cos_yaw], axis=0), [2, 2])
+
+    def transform_points(x, y):
+        """ Applies SDC transformation to x, y coordinates. """
+        xy = tf.stack([x - av_center_x, y - av_center_y], axis=-1)  # Translate
+        xy_transformed = tf.linalg.matmul(xy, rotation_matrix)  # Rotate
+        return xy_transformed[..., 0], xy_transformed[..., 1]
+
+    # Apply transformations to relevant fields
+    for key, value in tf_dataset.items():
+        if key == 'roadgraph_samples/xyz':
+            x, y = transform_points(
+                tf_dataset[key][..., 0], tf_dataset[key][..., 1])
+            transformed[key] = tf.stack(
+                [x, y, tf_dataset[key][..., 2]], axis=-1)
+        elif 'bbox_yaw' in key or 'vel_yaw' in key:
+            transformed[key] = value
+        elif key == 'state/past/x' or key == 'state/current/x' or key == 'state/future/x':
+            y_key = key.replace('x', 'y')
+            z_key = key.replace('x', 'z')
+            x, y = transform_points(
+                tf_dataset[key], tf_dataset[y_key])
+            transformed[key] = x
+            transformed[y_key] = y
+            transformed[z_key] = tf_dataset[z_key]
+        elif key == 'state/past/y' or key == 'state/current/y' or key == 'state/future/y':
+            # already handled in the previous case, so do nothing
+            pass
+        elif key == 'state/past/z' or key == 'state/current/z' or key == 'state/future/z':
+            # already handled in the previous case, so do nothing
+            pass
+        else:
+            transformed[key] = value  # Copy unchanged tensors
+
+    return transformed
+
+
 def downsample_roadgraph(tf_dataset):
     """
     Downsample the roadgraph of a given tf dataset.
