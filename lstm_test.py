@@ -1,6 +1,6 @@
 from models.loss import MultiModalLoss
 from models.lstm import LSTM_NN
-from utils.data.motion_dataset import FilteredMotionDataset
+from utils.data.motion_dataset import LSTMMotionDataset
 from utils.viz.visualize_scenario import visualize_model_inputs_and_output
 from torch.utils.data import DataLoader
 import torch
@@ -12,8 +12,8 @@ print(f"Using device: {device}")
 
 # Create the necessary dataloaders
 # Testing
-test_dataset = FilteredMotionDataset(
-    "./data/uncompressed/tf_example/testing/")
+test_dataset = LSTMMotionDataset(
+    "./data/uncompressed/tf_example/validation/")
 test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 # Setup necessary input sizes for the model
@@ -51,7 +51,7 @@ optimizer = optim.Adam(model.parameters(), lr=0.01)
 loss_fn = MultiModalLoss()
 
 # Testing
-model_path = "./models/trained_weights/lstm_model_3.pt"
+model_path = "./models/trained_weights/lstm_model_67_2025-03-19 21:50:23.pt"
 model.load_state_dict(torch.load(model_path))
 model.eval()  # Set model to evaluation mode
 test_loss = 0.0

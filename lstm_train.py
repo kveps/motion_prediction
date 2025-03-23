@@ -1,10 +1,9 @@
 from models.loss import MultiModalLoss
-from models.lstm import LSTM_NN
-from utils.data.motion_dataset import FilteredMotionDataset
+from models.lstm.lstm import LSTM_NN
+from utils.data.motion_dataset import LSTMMotionDataset
 from utils.viz.visualize_scenario import visualize_model_inputs_and_output
 from torch.utils.data import DataLoader
 import torch
-import torch.nn as nn
 import torch.optim as optim
 import datetime
 
@@ -16,16 +15,16 @@ print(f"Using device: {device}")
 # Create the necessary dataloaders
 #
 # Training
-training_dataset = FilteredMotionDataset(
+training_dataset = LSTMMotionDataset(
     "./data/uncompressed/tf_example/training/")
 training_dataloader = DataLoader(training_dataset, batch_size=32, shuffle=True)
 # Validation
-validation_dataset = FilteredMotionDataset(
+validation_dataset = LSTMMotionDataset(
     "./data/uncompressed/tf_example/validation/")
 validation_dataloader = DataLoader(
     validation_dataset, batch_size=32, shuffle=False)
 # Testing
-test_dataset = FilteredMotionDataset("./data/uncompressed/tf_example/testing/")
+test_dataset = LSTMMotionDataset("./data/uncompressed/tf_example/testing/")
 test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 

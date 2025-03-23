@@ -2,6 +2,7 @@ from matplotlib import cm
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
+import random
 
 import uuid
 
@@ -377,23 +378,28 @@ def visualize_model_inputs_and_output(model_input, model_output,
     """
     ############### Agents input ################
 
+    # Setup tracks to predict
+    # [num_agents].
+    tracks_to_predict = model_input['tracks_to_predict']
+    tracks_to_predict = (tracks_to_predict.clamp(min=0).bool())[
+        index_in_batch, ...]
+
     # Past and current agent states
     # [num_agents, num_timesteps, 1] float32.
-    agent_input_valid = model_input['agent_input_valid'][index_in_batch, :, :].bool(
-    )
-    agent_input_x = (model_input['agent_input'][index_in_batch, :, :, 0])[
-        agent_input_valid]
-    agent_input_y = (model_input['agent_input'][index_in_batch, :, :, 1])[
-        agent_input_valid]
+    agent_input_valid = model_input['agent_input_valid'].bool()
+    agent_input = model_input['agent_input'][index_in_batch, ...]
+    agent_input = agent_input[tracks_to_predict]
+    agent_input_x = agent_input[:, :, 0]
+    agent_input_y = agent_input[:, :, 1]
 
     # Target agent states
     # [num_agents, num_timesteps, 1] float32.
     agent_target_valid = model_input['agent_target_valid'][index_in_batch, :, :].bool(
     )
-    agent_target_x = (model_input['agent_target'][index_in_batch, :, :, 0])[
-        agent_target_valid]
-    agent_target_y = (model_input['agent_target'][index_in_batch, :, :, 1])[
-        agent_target_valid]
+    agent_target = model_input['agent_target'][index_in_batch, ...]
+    agent_target = agent_target[tracks_to_predict]
+    agent_target_x = agent_target[:, :, 0]
+    agent_target_y = agent_target[:, :, 1]
 
     # Plot agent input and target points
     plt.plot(agent_input_x, agent_input_y,
@@ -404,18 +410,20 @@ def visualize_model_inputs_and_output(model_input, model_output,
     ############### Agents output ################
 
     # Model ouput agent states
-    tracks_to_predict = model_input['tracks_to_predict'][index_in_batch]
     # [num_agents, num_future_trajectories, num_timesteps, 3] float32.
     agent_trajs = model_output['agent_trajs'][index_in_batch, ...]
+    agent_trajs = agent_trajs[tracks_to_predict]
     # [num_agents, num_future_trajectories] float32.
     agent_probs = model_output['agent_probs'][index_in_batch, ...]
+    agent_probs = agent_probs[tracks_to_predict]
     # [num_agents].
     agent_highest_prob_traj = torch.argmax(agent_probs, dim=-1)
+
     # [num_agents, num_timesteps, 1] float32.
-    agent_output_x = (
-        agent_trajs[tracks_to_predict, agent_highest_prob_traj, :, 0])
-    agent_output_y = (
-        agent_trajs[tracks_to_predict, agent_highest_prob_traj, :, 1])
+    agent_output_x = agent_trajs[:, 0, :, 0]
+    agent_output_y = agent_trajs[:, 0, :, 1]
+
+    print("Agent output trajs:", agent_trajs[:, :, :, :2])
 
     # Plot agent output points
     plt.plot(agent_output_x, agent_output_y,
@@ -452,4 +460,42 @@ def visualize_model_inputs_and_output(model_input, model_output,
     plt.ylabel('Y')
     plt.title('Road and Actor Visualization')
     plt.axis('equal')  # Ensure equal scaling for x and y axes
+    plt.show()
+
+
+def visualize_polylines(polylines, validity):
+    """Visualize  polylines.
+
+    Args:
+      polylines: A list of polylines, each represented as a list of
+        points, where each point is a list of three floats [x, y, z] and type.
+
+    Returns:
+      A matplotlib figure.
+    """
+    num_polylines = polylines.shape[0]
+    colors = plt.cm.get_cmap('viridis', num_polylines)
+
+    plt.figure()
+
+    for i in range(num_polylines):
+        polyline = polylines[i]
+        valid = validity[i]
+
+        valid_x = []
+        valid_y = []
+
+        for j in range(polyline.shape[0]):
+            if valid[j]:
+                valid_x.append(polyline[j, 0])
+                valid_y.append(polyline[j, 1])
+
+        if valid_x:  # check if there are any valid points to plot
+            random_color = (random.random(), random.random(), random.random())
+            plt.plot(valid_x, valid_y, random_color)
+
+    plt.xlabel("X")
+    plt.ylabel("Y")
+    plt.title("Polylines Visualization with Validity")
+    plt.grid(True)
     plt.show()

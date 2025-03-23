@@ -168,6 +168,91 @@ def arrange_static_roadgraph_model_input(torch_dataset_element):
     return static_roadgraph_input, roadgraph_samples_valid
 
 
+def arrange_static_roadgraph_polyline_model_input(torch_dataset_element):
+    """
+    Create a polyline from the static roadgraph.
+
+    Args:
+        torch_dataset_element (dict): A PyTorch dataset element, containing
+        the roadgraph and other data.
+
+    Returns:
+        list: A list of polylines, where each polyline is a list of points.
+            # [num_map_samples, MAX_POLYLINE_LENGTH, NUM_FEATURES_PER_POLYLINE]
+        list: A list of validity flags for each polyline points.
+    """
+    MAX_POLYLINE_LENGTH = 30
+    NUM_FEATURES_PER_POLYLINE = 4  # (x, y, z, type)
+    POLYLINE_DISTANCE_THRESHOLD = 10
+    POLYLINE_ANGLE_THRESHOLD = torch.pi/4
+    MAX_NUM_POLYLINES = 1000
+
+    num_static_rg_samples = torch_dataset_element['roadgraph_samples/xyz'].size(
+        0)
+
+    # Create a list of polylines with -1 indicating invalid
+    # [num_map_samples, MAX_POLYLINE_LENGTH, NUM_FEATURES_PER_POLYLINE]
+    polylines = torch.zeros((MAX_NUM_POLYLINES,
+                             MAX_POLYLINE_LENGTH, NUM_FEATURES_PER_POLYLINE))
+    validity = torch.zeros((MAX_NUM_POLYLINES, MAX_POLYLINE_LENGTH))
+    polyline_idx = 0
+    point_idx = 0
+    for i in range(num_static_rg_samples):
+        if torch_dataset_element['roadgraph_samples/valid'][i] == 1:
+            polylines[polyline_idx, point_idx,
+                      0] = torch_dataset_element['roadgraph_samples/xyz'][i, 0]
+            polylines[polyline_idx, point_idx,
+                      1] = torch_dataset_element['roadgraph_samples/xyz'][i, 1]
+            polylines[polyline_idx, point_idx,
+                      2] = torch_dataset_element['roadgraph_samples/xyz'][i, 2]
+            polylines[polyline_idx, point_idx,
+                      3] = torch_dataset_element['roadgraph_samples/type'][i]
+            validity[polyline_idx, point_idx] = 1
+
+            if i == num_static_rg_samples - 1:
+                break
+
+            # Fill a new polyline for the next point if
+            # 1. The type changes
+            # 2. The polyline is full
+            # 3. The angle between the current and next direction is too large
+            # 4. The next point is too far from the current point
+
+            # Check if we've reached end of current polyline
+            polyline_end = point_idx == MAX_POLYLINE_LENGTH - 1
+
+            # Check if the next point type changes
+            curr_type = torch_dataset_element['roadgraph_samples/type'][i]
+            next_type = torch_dataset_element['roadgraph_samples/type'][i + 1]
+            type_change = curr_type != next_type
+
+            # Check if the angle between the current and next direction is too large
+            curr_dir = torch_dataset_element['roadgraph_samples/dir'][i]
+            next_dir = torch_dataset_element['roadgraph_samples/dir'][i + 1]
+            # get angle between the two directions
+            angle = torch.acos(
+                torch.dot(curr_dir, next_dir) /
+                (torch.norm(curr_dir) * torch.norm(next_dir)))
+            dir_change = angle > POLYLINE_ANGLE_THRESHOLD
+
+            # Check if the next point is too far from current point
+            curr_point = torch_dataset_element['roadgraph_samples/xyz'][i]
+            next_point = torch_dataset_element['roadgraph_samples/xyz'][i + 1]
+            dist = torch.norm(curr_point - next_point)
+            dist_change = dist > POLYLINE_DISTANCE_THRESHOLD
+
+            if polyline_end or type_change or dir_change or dist_change:
+                polyline_idx += 1
+                point_idx = 0
+            else:
+                point_idx += 1
+
+            if polyline_idx == MAX_NUM_POLYLINES:
+                break
+
+    return polylines, validity
+
+
 def arrange_dynamic_roadgraph_model_input(torch_dataset_element):
     """
     Arrange the model input for the dynamic roadgraph model.
