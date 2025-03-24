@@ -1,4 +1,4 @@
-from models.loss import MultiModalLoss
+from models.loss.nll_loss import NLL_Loss
 from models.lstm.lstm import LSTM_NN
 from utils.data.motion_dataset import LSTMMotionDataset
 from utils.viz.visualize_scenario import visualize_model_inputs_and_output
@@ -60,7 +60,7 @@ model.to(device)
 
 # Optimizer and Loss
 optimizer = optim.Adam(model.parameters(), lr=0.01)
-loss_fn = MultiModalLoss()
+loss_fn = NLL_Loss()
 
 # Config
 TRAINING_MODE = True

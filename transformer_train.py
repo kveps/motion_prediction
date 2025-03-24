@@ -1,4 +1,4 @@
-from models.loss import MultiModalLoss
+from models.loss.nll_loss import NLL_Loss
 from models.transformer.transformer import Transformer_NN
 from utils.data.motion_dataset import TransformerMotionDataset
 from utils.viz.visualize_scenario import visualize_model_inputs_and_output
@@ -52,6 +52,7 @@ model = Transformer_NN(num_agent_features=num_agent_features,
                        num_dynamic_road_features=num_dynamic_roadgraph_features,
                        num_past_timesteps=num_past_timesteps,
                        num_model_features=num_model_features,
+                       num_future_trajectories=num_future_trajectories,
                        num_future_timesteps=num_future_timesteps,
                        num_future_features=num_future_features)
 model.to(device)
@@ -60,7 +61,7 @@ print("Model has been set, num params: ", sum(p.numel()
 
 # Optimizer and Loss
 optimizer = optim.Adam(model.parameters(), lr=0.01)
-loss_fn = MultiModalLoss()
+loss_fn = NLL_Loss()
 
 # Config
 TRAINING_MODE = True
@@ -93,7 +94,7 @@ if TRAINING_MODE:
 
             # initialize future agents and valid
             batch_size, num_agents, _, _ = agents.size()
-            future_agents = torch.zeros(
+            future_agents = torch.ones(
                 (batch_size, num_agents, num_future_timesteps, num_future_features),
                 dtype=torch.float32,
                 device=device,
@@ -102,18 +103,14 @@ if TRAINING_MODE:
                 agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps)
 
             optimizer.zero_grad()
-            output = model(agents,
-                           agents_valid,
-                           static_road,
-                           static_road_valid,
-                           dynamic_road,
-                           dynamic_road_valid,
-                           future_agents,
-                           future_agents_valid)
-            # package output
-            trajectories = output.unsqueeze(dim=-3)
-            probs = torch.ones(
-                (batch_size, num_agents, num_future_trajectories), device=device)
+            trajectories, probs = model(agents,
+                                        agents_valid,
+                                        static_road,
+                                        static_road_valid,
+                                        dynamic_road,
+                                        dynamic_road_valid,
+                                        future_agents,
+                                        future_agents_valid)
             loss = loss_fn(
                 trajectories, probs, agent_target, agent_target_valid)
             loss.backward()
@@ -147,7 +144,7 @@ if TRAINING_MODE:
 
                 # initialize future agents and valid
                 batch_size, num_agents, _, _ = agents.size()
-                future_agents = torch.zeros(
+                future_agents = torch.ones(
                     (batch_size, num_agents, num_future_timesteps, num_future_features),
                     dtype=torch.float32,
                     device=device,
@@ -156,18 +153,14 @@ if TRAINING_MODE:
                     agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps)
 
                 optimizer.zero_grad()
-                output = model(agents,
-                               agents_valid,
-                               static_road,
-                               static_road_valid,
-                               dynamic_road,
-                               dynamic_road_valid,
-                               future_agents,
-                               future_agents_valid)
-                # package output
-                trajectories = output.unsqueeze(dim=-3)
-                probs = torch.ones(
-                    (batch_size, num_agents, num_future_trajectories), device=device)
+                trajectories, probs = model(agents,
+                                            agents_valid,
+                                            static_road,
+                                            static_road_valid,
+                                            dynamic_road,
+                                            dynamic_road_valid,
+                                            future_agents,
+                                            future_agents_valid)
                 loss = loss_fn(
                     trajectories, probs, agent_target, agent_target_valid)
                 val_loss += loss.item()
@@ -208,7 +201,7 @@ else:
 
             # initialize future agents and valid
             batch_size, num_agents, _, _ = agents.size()
-            future_agents = torch.zeros(
+            future_agents = torch.ones(
                 (batch_size, num_agents, num_future_timesteps, num_future_features),
                 dtype=torch.float32,
                 device=device,
@@ -217,18 +210,14 @@ else:
                 agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps)
 
             optimizer.zero_grad()
-            output = model(agents,
-                           agents_valid,
-                           static_road,
-                           static_road_valid,
-                           dynamic_road,
-                           dynamic_road_valid,
-                           future_agents,
-                           future_agents_valid)
-            # package output
-            trajectories = output.unsqueeze(dim=-3)
-            probs = torch.ones(
-                (batch_size, num_agents, num_future_trajectories), device=device)
+            trajectories, probs = model(agents,
+                                        agents_valid,
+                                        static_road,
+                                        static_road_valid,
+                                        dynamic_road,
+                                        dynamic_road_valid,
+                                        future_agents,
+                                        future_agents_valid)
             loss = loss_fn(
                 trajectories, probs, agent_target, agent_target_valid)
             test_loss += loss.item()

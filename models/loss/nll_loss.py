@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 
 
-class MultiModalLoss(nn.Module):
+class NLL_Loss(nn.Module):
     def __init__(self):
-        super(MultiModalLoss, self).__init__()
+        super(NLL_Loss, self).__init__()
 
     def forward(self,
                 predicted_trajectories,

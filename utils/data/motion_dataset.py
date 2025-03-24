@@ -172,12 +172,15 @@ class TransformerMotionDataset(Dataset):
         return self.parsed_tf_dataset
 
 
-directory_path = "./data/uncompressed/tf_example/training/"
-motion_dataset = LSTMMotionDataset(directory_path)
-visualize_scenario_image(motion_dataset.get_full_torch_element(20))
+# Example usage
+test_usage = False
+if test_usage:
+    directory_path = "./data/uncompressed/tf_example/training/"
+    motion_dataset = LSTMMotionDataset(directory_path)
+    visualize_scenario_image(motion_dataset.get_full_torch_element(20))
 
-# directory_path = "./data/uncompressed/tf_example/training/"
-# motion_dataset = TransformerMotionDataset(directory_path)
-# map_polyline, validity = arrange_static_roadgraph_polyline_model_input(
-#     motion_dataset.get_full_torch_element(20))
-# visualize_polylines(map_polyline, validity)
+    directory_path = "./data/uncompressed/tf_example/training/"
+    motion_dataset = TransformerMotionDataset(directory_path)
+    map_polyline, validity = arrange_static_roadgraph_polyline_model_input(
+        motion_dataset.get_full_torch_element(20))
+    visualize_polylines(map_polyline, validity)

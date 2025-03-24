@@ -12,12 +12,15 @@ class Transformer_NN(nn.Module):
                  num_dynamic_road_features,
                  num_past_timesteps,
                  num_model_features,
+                 num_future_trajectories,
                  num_future_timesteps,
                  num_future_features):
         super(Transformer_NN, self).__init__()
 
         self.num_past_timesteps = num_past_timesteps
-        self.future_timesteps = num_future_timesteps
+        self.num_future_trajectories = num_future_trajectories
+        self.num_future_timesteps = num_future_timesteps
+        self.num_future_features = num_future_features
         self.d_model = num_model_features
 
         # Polyline embedding for all inputs (agent, static_rg, dynamic_rg)
@@ -45,7 +48,7 @@ class Transformer_NN(nn.Module):
         # Positional embedding for future
         self.future_positional_encoding = PositionalEncoder(
             d_model=self.d_model,
-            num_timesteps=self.future_timesteps,
+            num_timesteps=self.num_future_timesteps,
         )
 
         # Transformer encoder
@@ -53,13 +56,21 @@ class Transformer_NN(nn.Module):
             num_layers=2, d_model=num_model_features, ffn_hidden=2048, num_heads=4, drop_prob=0.1,
         )
 
-        # Transformer decoder
-        self.transformer_decoder = PredictionDecoder(
+        # Transformer decoders (for each future trajectory)
+        self.transformer_decoders = nn.ModuleList([PredictionDecoder(
             num_layers=2, d_model=num_model_features, ffn_hidden=2048, num_heads=4, drop_prob=0.1,
-        )
+        ) for _ in range(num_future_trajectories)])
 
         # Trajectory Prediction
-        self.linear = nn.Linear(self.d_model, num_future_features)
+        self.trajectory_predictions = nn.ModuleList([nn.Linear(
+            num_model_features, num_future_features) for _ in range(num_future_trajectories)])
+
+        # Trajectory probabilities
+        self.trajectory_confidences = nn.ModuleList([
+            nn.Linear(num_model_features*num_future_timesteps, 1)
+            for _ in range(num_future_trajectories)
+        ])
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, agents, agents_valid, static_road, static_road_valid, dynamic_road, dynamic_road_valid, future_agents, future_agents_valid):
         # Polyline embeddings
@@ -100,7 +111,7 @@ class Transformer_NN(nn.Module):
             (future_agents.size(0), future_agents.size(
                 1), future_agents.size(2), self.d_model)
         )
-        for t in range(self.future_timesteps):
+        for t in range(self.num_future_timesteps):
             future_agents_at_t = future_agents[..., t, :].unsqueeze(dim=-2)
             future_agent_embeddings[..., t, :] = self.future_agent_pointnet(
                 future_agents_at_t)
@@ -111,54 +122,78 @@ class Transformer_NN(nn.Module):
         )
 
         # Transformer decoder
-        decoder_outputs = self.transformer_decoder(
-            context_encoded_agents,
-            agents_valid,
-            future_agent_embeddings,
-            future_agents_valid,
+        future_trajectories = torch.zeros_like(future_agents).unsqueeze(dim=-3).expand(
+            -1, -1, self.num_future_trajectories, -1, -1
         )
+        confidence_scores = torch.zeros(
+            (future_agents.size(0), future_agents.size(1),
+             self.num_future_trajectories, 1)
+        )
+        for i in range(self.num_future_trajectories):
+            decoder_outputs = self.transformer_decoders[i](
+                context_encoded_agents,
+                agents_valid,
+                # TODO: Initialize each decoder with a separate future agent embedding
+                future_agent_embeddings,
+                future_agents_valid,
+            )
+            # Trajectory prediction
+            future_trajectories[..., i, :, :] = self.trajectory_predictions[i](
+                decoder_outputs)
+            # Trajectory confidence
+            decoder_outputs = decoder_outputs.view(
+                decoder_outputs.size(0), decoder_outputs.size(1),
+                self.num_future_timesteps*self.d_model)
+            confidence_scores[..., i, :] = self.sigmoid(
+                self.trajectory_confidences[i](decoder_outputs))
 
-        # Trajectory prediction
-        future_trajectory = self.linear(decoder_outputs)
+        # Softmax on confidence scores for trajectory probabilities
+        probs = torch.softmax(confidence_scores, dim=-1).squeeze(dim=-1)
 
-        return future_trajectory
+        return future_trajectories, probs
 
 
 # Example usage
-num_agent_features = 10
-num_static_road_features = 4
-num_dynamic_road_features = 4
-num_past_timesteps = 11
-num_model_features = 256
-num_future_timesteps = 80
-num_future_features = 4
+test_usage = False
+if test_usage:
+    num_agent_features = 10
+    num_static_road_features = 4
+    num_dynamic_road_features = 4
+    num_past_timesteps = 11
+    num_model_features = 256
+    num_future_timesteps = 80
+    num_future_features = 4
+    num_future_trajectories = 3
 
-model = Transformer_NN(num_agent_features=num_agent_features,
-                       num_static_road_features=num_static_road_features,
-                       num_dynamic_road_features=num_dynamic_road_features,
-                       num_past_timesteps=num_past_timesteps,
-                       num_model_features=num_model_features,
-                       num_future_timesteps=num_future_timesteps,
-                       num_future_features=num_future_features)
+    model = Transformer_NN(num_agent_features=num_agent_features,
+                           num_static_road_features=num_static_road_features,
+                           num_dynamic_road_features=num_dynamic_road_features,
+                           num_past_timesteps=num_past_timesteps,
+                           num_model_features=num_model_features,
+                           num_future_trajectories=num_future_trajectories,
+                           num_future_timesteps=num_future_timesteps,
+                           num_future_features=num_future_features)
 
-batch_size = 10
-num_agents = 10
-num_static_rg = 500
-num_static_points_per_polyline = 20
-num_dynamic_rg = 7
-agents = torch.randn(batch_size, num_agents,
-                     num_past_timesteps, num_agent_features)
-agents_valid = torch.ones(batch_size, num_agents, num_past_timesteps)
-static_road = torch.randn(batch_size, num_static_rg,
-                          num_static_points_per_polyline, num_static_road_features)
-static_road_valid = torch.ones(
-    batch_size, num_static_rg, num_static_points_per_polyline)
-dynamic_road = torch.randn(batch_size, num_dynamic_rg,
-                           num_past_timesteps, num_dynamic_road_features)
-dynamic_road_valid = torch.ones(batch_size, num_dynamic_rg, num_past_timesteps)
-future_agents = torch.randn(batch_size, num_agents,
-                            num_future_timesteps, num_future_features)
-future_agents_valid = torch.ones(batch_size, num_agents, num_future_timesteps)
+    batch_size = 10
+    num_agents = 10
+    num_static_rg = 500
+    num_static_points_per_polyline = 20
+    num_dynamic_rg = 7
+    agents = torch.randn(batch_size, num_agents,
+                         num_past_timesteps, num_agent_features)
+    agents_valid = torch.ones(batch_size, num_agents, num_past_timesteps)
+    static_road = torch.randn(batch_size, num_static_rg,
+                              num_static_points_per_polyline, num_static_road_features)
+    static_road_valid = torch.ones(
+        batch_size, num_static_rg, num_static_points_per_polyline)
+    dynamic_road = torch.randn(batch_size, num_dynamic_rg,
+                               num_past_timesteps, num_dynamic_road_features)
+    dynamic_road_valid = torch.ones(
+        batch_size, num_dynamic_rg, num_past_timesteps)
+    future_agents = torch.randn(batch_size, num_agents,
+                                num_future_timesteps, num_future_features)
+    future_agents_valid = torch.ones(
+        batch_size, num_agents, num_future_timesteps)
 
-output = model(agents, agents_valid, static_road, static_road_valid,
-               dynamic_road, dynamic_road_valid, future_agents, future_agents_valid)
+    output = model(agents, agents_valid, static_road, static_road_valid,
+                   dynamic_road, dynamic_road_valid, future_agents, future_agents_valid)
