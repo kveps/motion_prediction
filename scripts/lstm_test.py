@@ -1,5 +1,5 @@
-from models.loss import MultiModalLoss
-from models.lstm import LSTM_NN
+from models.loss.nll_loss import NLL_Loss
+from models.lstm.lstm import LSTM_NN
 from utils.data.motion_dataset import LSTMMotionDataset
 from utils.viz.visualize_scenario import visualize_model_inputs_and_output
 from torch.utils.data import DataLoader
@@ -48,10 +48,10 @@ model.to(device)
 
 # Optimizer
 optimizer = optim.Adam(model.parameters(), lr=0.01)
-loss_fn = MultiModalLoss()
+loss_fn = NLL_Loss()
 
 # Testing
-model_path = "./models/trained_weights/lstm_model_67_2025-03-19 21:50:23.pt"
+model_path = "./models/trained_weights/lstm_model_single_mode.pt"
 model.load_state_dict(torch.load(model_path))
 model.eval()  # Set model to evaluation mode
 test_loss = 0.0
@@ -75,7 +75,6 @@ with torch.no_grad():
         loss = loss_fn(
             trajectories, probs, agent_target, agent_target_valid)
         test_loss += loss.item()
-        print("Running loss: ", loss.item())
 
         # Visualize the model inputs and outputs
         model_output = {

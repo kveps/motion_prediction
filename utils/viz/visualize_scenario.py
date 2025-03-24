@@ -420,10 +420,9 @@ def visualize_model_inputs_and_output(model_input, model_output,
     agent_highest_prob_traj = torch.argmax(agent_probs, dim=-1)
 
     # [num_agents, num_timesteps, 1] float32.
+    # TODO: Correctly use the highest prob trajectory instead of index zero below
     agent_output_x = agent_trajs[:, 0, :, 0]
     agent_output_y = agent_trajs[:, 0, :, 1]
-
-    print("Agent output trajs:", agent_trajs[:, :, :, :2])
 
     # Plot agent output points
     plt.plot(agent_output_x, agent_output_y,
