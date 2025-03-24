@@ -94,7 +94,7 @@ if TRAINING_MODE:
 
             # initialize future agents and valid
             batch_size, num_agents, _, _ = agents.size()
-            future_agents = torch.ones(
+            future_agents = torch.zeros(
                 (batch_size, num_agents, num_future_timesteps, num_future_features),
                 dtype=torch.float32,
                 device=device,
@@ -144,7 +144,7 @@ if TRAINING_MODE:
 
                 # initialize future agents and valid
                 batch_size, num_agents, _, _ = agents.size()
-                future_agents = torch.ones(
+                future_agents = torch.zeros(
                     (batch_size, num_agents, num_future_timesteps, num_future_features),
                     dtype=torch.float32,
                     device=device,
@@ -201,7 +201,7 @@ else:
 
             # initialize future agents and valid
             batch_size, num_agents, _, _ = agents.size()
-            future_agents = torch.ones(
+            future_agents = torch.zeros(
                 (batch_size, num_agents, num_future_timesteps, num_future_features),
                 dtype=torch.float32,
                 device=device,
