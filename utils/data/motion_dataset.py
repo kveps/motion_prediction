@@ -33,9 +33,15 @@ def _parse_function(example_proto):
 class LSTMMotionDataset(Dataset):
     def __init__(self, data_path):
         self.data_path = data_path
-        data_files = get_data_file_names(data_path)
-        # Append the directory path to get a complete file path
-        data_files = [data_path + file for file in data_files]
+        
+        # Handle both local and GCS paths
+        if data_path.startswith('gs://'):
+            # For GCS paths, use TensorFlow's file matching
+            data_files = tf.io.gfile.glob(data_path + '*.tfrecord')
+        else:
+            # For local paths, use the original method
+            data_files = get_data_file_names(data_path)
+            data_files = [data_path + file for file in data_files]
 
         # Load the tf dataset
         tf_dataset = tf.data.TFRecordDataset(data_files)
@@ -104,9 +110,15 @@ class LSTMMotionDataset(Dataset):
 class TransformerMotionDataset(Dataset):
     def __init__(self, data_path):
         self.data_path = data_path
-        data_files = get_data_file_names(data_path)
-        # Append the directory path to get a complete file path
-        data_files = [data_path + file for file in data_files]
+        
+        # Handle both local and GCS paths
+        if data_path.startswith('gs://'):
+            # For GCS paths, use TensorFlow's file matching
+            data_files = tf.io.gfile.glob(data_path + '*.tfrecord')
+        else:
+            # For local paths, use the original method
+            data_files = get_data_file_names(data_path)
+            data_files = [data_path + file for file in data_files]
 
         # Load the tf dataset
         tf_dataset = tf.data.TFRecordDataset(data_files)
