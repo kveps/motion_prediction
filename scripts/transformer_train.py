@@ -1,3 +1,16 @@
+"""
+Transformer training script with support for both local and Google Colab (GCS) training.
+
+Usage:
+    # Local training (default)
+    python transformer_train.py
+    
+    # Colab training with GCS paths
+    python transformer_train.py --colab
+    
+    # Testing mode
+    python transformer_train.py --test --model-path <path_to_model>
+"""
 from models.loss.nll_loss import NLL_Loss
 from models.transformer.transformer import Transformer_NN
 from utils.data.motion_dataset import TransformerMotionDataset
@@ -6,27 +19,68 @@ from torch.utils.data import DataLoader
 import torch
 import torch.optim as optim
 import datetime
+import argparse
+import os
+
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='Train or test Transformer model')
+parser.add_argument('--colab', action='store_true', 
+                    help='Use Google Colab mode with GCS paths (requires authentication)')
+parser.add_argument('--test', action='store_true',
+                    help='Run in testing mode instead of training')
+parser.add_argument('--model-path', type=str, default=None,
+                    help='Path to model weights for testing')
+parser.add_argument('--epochs', type=int, default=100,
+                    help='Number of training epochs (default: 100)')
+parser.add_argument('--batch-size', type=int, default=5,
+                    help='Batch size for training/validation (default: 5)')
+parser.add_argument('--lr', type=float, default=0.01,
+                    help='Learning rate (default: 0.01)')
+args = parser.parse_args()
 
 # Determine the device to use
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
+# Configure paths based on mode
+if args.colab:
+    print("Running in Colab mode - using GCS paths")
+    TRAINING_PATH = "gs://waymo_open_dataset_motion_v_1_2_1/uncompressed/tf_example/training/"
+    VALIDATION_PATH = "gs://waymo_open_dataset_motion_v_1_2_1/uncompressed/tf_example/validation/"
+    TESTING_PATH = "gs://waymo_open_dataset_motion_v_1_2_1/uncompressed/tf_example/testing/"
+    
+    # Try Google Drive first, fallback to /content if not mounted
+    if os.path.exists("/content/drive/MyDrive"):
+        SAVE_DIR = "/content/drive/MyDrive/av_prediction/models/trained_weights/"
+        print("✓ Using Google Drive for model storage")
+    else:
+        SAVE_DIR = "/content/models/trained_weights/"
+        print("⚠ Google Drive not mounted - saving to /content/ (temporary storage)")
+else:
+    print("Running in local mode")
+    TRAINING_PATH = "./data/uncompressed/tf_example/training/"
+    VALIDATION_PATH = "./data/uncompressed/tf_example/validation/"
+    TESTING_PATH = "./data/uncompressed/tf_example/testing/"
+    SAVE_DIR = "./models/trained_weights/"
+
+# Create save directory
+os.makedirs(SAVE_DIR, exist_ok=True)
+print(f"Models will be saved to: {SAVE_DIR}")
 
 # Create the necessary dataloaders
-#
-# Training
-training_dataset = TransformerMotionDataset(
-    "./data/uncompressed/tf_example/training/")
-training_dataloader = DataLoader(training_dataset, batch_size=5, shuffle=True)
-# Validation
-validation_dataset = TransformerMotionDataset(
-    "./data/uncompressed/tf_example/validation/")
-validation_dataloader = DataLoader(
-    validation_dataset, batch_size=5, shuffle=False)
-# Testing
-test_dataset = TransformerMotionDataset(
-    "./data/uncompressed/tf_example/testing/")
+print("Loading datasets...")
+training_dataset = TransformerMotionDataset(TRAINING_PATH)
+training_dataloader = DataLoader(training_dataset, batch_size=args.batch_size, shuffle=True)
+
+validation_dataset = TransformerMotionDataset(VALIDATION_PATH)
+validation_dataloader = DataLoader(validation_dataset, batch_size=args.batch_size, shuffle=False)
+
+test_dataset = TransformerMotionDataset(TESTING_PATH)
 test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+
+print(f"Training samples: {len(training_dataset)}")
+print(f"Validation samples: {len(validation_dataset)}")
+print(f"Testing samples: {len(test_dataset)}")
 
 
 # Setup necessary input sizes for the model
@@ -60,21 +114,24 @@ print("Model has been set, num params: ", sum(p.numel()
       for p in model.parameters()))
 
 # Optimizer and Loss
-optimizer = optim.Adam(model.parameters(), lr=0.01)
+optimizer = optim.Adam(model.parameters(), lr=args.lr)
 loss_fn = NLL_Loss()
 
 # Config
-TRAINING_MODE = True
-NUM_EPOCHS = 100
+NUM_EPOCHS = args.epochs
 
-if TRAINING_MODE:
+if not args.test:
     # Training Loop
+    print("\nStarting training...")
     for epoch in range(NUM_EPOCHS):
         # Training
         model.train()  # Set model to training mode
         train_loss = 0.0
-        print("Epoch: ", epoch)
-        for dataset_element in training_dataloader:
+        print(f"\n{'='*50}")
+        print(f"Epoch {epoch+1}/{NUM_EPOCHS}")
+        print(f"{'='*50}")
+        
+        for batch_idx, dataset_element in enumerate(training_dataloader):
             # fetch inputs
             agents = dataset_element['agent_input'].to(device)
             agents_valid = dataset_element['agent_input_valid'].to(device)
@@ -103,20 +160,17 @@ if TRAINING_MODE:
                 agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps)
 
             optimizer.zero_grad()
-            trajectories, probs = model(agents,
-                                        agents_valid,
-                                        static_road,
-                                        static_road_valid,
-                                        dynamic_road,
-                                        dynamic_road_valid,
-                                        future_agents,
-                                        future_agents_valid)
-            loss = loss_fn(
-                trajectories, probs, agent_target, agent_target_valid)
+            trajectories, probs = model(
+                agents, agents_valid, static_road, static_road_valid,
+                dynamic_road, dynamic_road_valid, future_agents, future_agents_valid
+            )
+            loss = loss_fn(trajectories, probs, agent_target, agent_target_valid)
             loss.backward()
-            print("Running loss: ", loss.item())
             optimizer.step()
             train_loss += loss.item()
+            
+            if (batch_idx + 1) % 10 == 0:
+                print(f"Batch [{batch_idx+1}/{len(training_dataloader)}], Loss: {loss.item():.4f}")
 
         avg_train_loss = train_loss / len(training_dataloader)
 
@@ -152,32 +206,36 @@ if TRAINING_MODE:
                 future_agents_valid = torch.amax(
                     agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps)
 
-                optimizer.zero_grad()
-                trajectories, probs = model(agents,
-                                            agents_valid,
-                                            static_road,
-                                            static_road_valid,
-                                            dynamic_road,
-                                            dynamic_road_valid,
-                                            future_agents,
-                                            future_agents_valid)
-                loss = loss_fn(
-                    trajectories, probs, agent_target, agent_target_valid)
+                trajectories, probs = model(
+                    agents, agents_valid, static_road, static_road_valid,
+                    dynamic_road, dynamic_road_valid, future_agents, future_agents_valid
+                )
+                loss = loss_fn(trajectories, probs, agent_target, agent_target_valid)
                 val_loss += loss.item()
 
         avg_val_loss = val_loss / len(validation_dataloader)
 
-        print(
-            f'Epoch [{epoch+1}/{NUM_EPOCHS}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
+        print(f'\n{"="*50}')
+        print(f'Epoch [{epoch+1}/{NUM_EPOCHS}] Summary:')
+        print(f'  Train Loss: {avg_train_loss:.4f}')
+        print(f'  Val Loss:   {avg_val_loss:.4f}')
+        print(f'{"="*50}')
 
+        # Save model
         now = datetime.datetime.now()
-        path = "./models/trained_weights/transformer_model_" + \
-            str(epoch + 1) + "_" + now.strftime("%Y-%m-%d %H:%M:%S") + ".pt"
+        filename = f"transformer_model_epoch_{epoch+1}_{now.strftime('%Y%m%d_%H%M%S')}.pt"
+        path = os.path.join(SAVE_DIR, filename)
         torch.save(model.state_dict(), path)
+        print(f"Model saved to: {path}")
+    
+    print("\n✓ Training complete!")
 else:
     # Testing
-    model_path = "./models/trained_weights/transformer_model_12_2025-03-18 17:36:10.pt"
-    model.load_state_dict(torch.load(model_path))
+    if args.model_path is None:
+        raise ValueError("Must specify --model-path for testing mode")
+    
+    print(f"\nLoading model from: {args.model_path}")
+    model.load_state_dict(torch.load(args.model_path))
     model.eval()  # Set model to evaluation mode
     test_loss = 0.0
     with torch.no_grad():
@@ -209,17 +267,11 @@ else:
             future_agents_valid = torch.amax(
                 agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps)
 
-            optimizer.zero_grad()
-            trajectories, probs = model(agents,
-                                        agents_valid,
-                                        static_road,
-                                        static_road_valid,
-                                        dynamic_road,
-                                        dynamic_road_valid,
-                                        future_agents,
-                                        future_agents_valid)
-            loss = loss_fn(
-                trajectories, probs, agent_target, agent_target_valid)
+            trajectories, probs = model(
+                agents, agents_valid, static_road, static_road_valid,
+                dynamic_road, dynamic_road_valid, future_agents, future_agents_valid
+            )
+            loss = loss_fn(trajectories, probs, agent_target, agent_target_valid)
             test_loss += loss.item()
 
             # Visualize the model inputs and outputs
@@ -227,9 +279,8 @@ else:
                 'agent_trajs': trajectories,
                 'agent_probs': probs,
             }
-            visualize_model_inputs_and_output(
-                dataset_element, model_output)
+            visualize_model_inputs_and_output(dataset_element, model_output)
 
     avg_test_loss = test_loss / len(test_dataloader)
 
-    print(f'Test Loss: {avg_test_loss:.4f}')
+    print(f'\nTest Loss: {avg_test_loss:.4f}')
