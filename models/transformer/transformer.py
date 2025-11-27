@@ -76,9 +76,11 @@ class Transformer_NN(nn.Module):
         # Polyline embeddings
         #
         agent_embeddings = torch.zeros(
-            (agents.size(0), agents.size(1), agents.size(2), self.d_model))
+            (agents.size(0), agents.size(1), agents.size(2), self.d_model), 
+            device=agents.device, dtype=agents.dtype)
         dynamic_rg_embedding = torch.zeros(
-            (dynamic_road.size(0), dynamic_road.size(1), dynamic_road.size(2), self.d_model))
+            (dynamic_road.size(0), dynamic_road.size(1), dynamic_road.size(2), self.d_model),
+            device=dynamic_road.device, dtype=dynamic_road.dtype)
         for t in range(self.num_past_timesteps):
             agents_at_t = agents[..., t, :].unsqueeze(dim=-2)
             dynamic_road_at_t = dynamic_road[..., t, :].unsqueeze(dim=-2)
@@ -109,7 +111,8 @@ class Transformer_NN(nn.Module):
         # Polyline embeddings for future
         future_agent_embeddings = torch.zeros(
             (future_agents.size(0), future_agents.size(
-                1), future_agents.size(2), self.d_model)
+                1), future_agents.size(2), self.d_model),
+            device=future_agents.device, dtype=future_agents.dtype
         )
         for t in range(self.num_future_timesteps):
             future_agents_at_t = future_agents[..., t, :].unsqueeze(dim=-2)
@@ -127,7 +130,8 @@ class Transformer_NN(nn.Module):
         )
         confidence_scores = torch.zeros(
             (future_agents.size(0), future_agents.size(1),
-             self.num_future_trajectories, 1)
+             self.num_future_trajectories, 1),
+            device=future_agents.device, dtype=future_agents.dtype
         )
         for i in range(self.num_future_trajectories):
             decoder_outputs = self.transformer_decoders[i](

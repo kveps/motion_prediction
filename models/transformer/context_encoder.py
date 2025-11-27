@@ -9,15 +9,18 @@ from models.transformer.layer_norm import LayerNorm
 
 def _create_agent_agent_attention_mask(agents, agents_valid):
     batch_size, num_agents, num_timesteps, _ = agents.size()
+    # Ensure mask is on the same device as agents
+    device = agents.device
+    
     # [batch_size*num_agents, num_timesteps, num_timesteps]
     time_attention_mask = agents_valid.reshape(
         batch_size * num_agents, num_timesteps
-    ).unsqueeze(-1).repeat(1, 1, num_timesteps)
+    ).unsqueeze(-1).repeat(1, 1, num_timesteps).to(device)
 
     # [batch_size*num_timesteps, num_agents, num_agents]
     agent_attention_mask = agents_valid.swapaxes(1, 2).reshape(
         batch_size * num_timesteps, num_agents,
-    ).unsqueeze(-1).repeat(1, 1, num_agents)
+    ).unsqueeze(-1).repeat(1, 1, num_agents).to(device)
 
     return time_attention_mask, agent_attention_mask
 
@@ -26,6 +29,9 @@ def _create_agent_static_road_attention_mask(agents, agents_valid,
                                              static_road, static_road_valid):
     batch_size, num_agents, num_timesteps, _ = agents.size()
     _, num_static_rg, _, _ = static_road.size()
+    # Ensure mask is on the same device as agents
+    device = agents.device
+    
     # Max ensures that even if one polyline point is valid, the whole polyline
     # is valid. This might be okay since we max pool in the points dimension
     #  in pointnet.
@@ -48,7 +54,7 @@ def _create_agent_static_road_attention_mask(agents, agents_valid,
     agent_mask = agent_mask.unsqueeze(-1).repeat(
         1, 1, num_static_rg)
     # [batch_size*num_timesteps, num_static_rg, num_agents]
-    static_road_agent_mask = static_road_mask * agent_mask
+    static_road_agent_mask = (static_road_mask * agent_mask).to(device)
 
     return static_road_agent_mask
 
@@ -58,6 +64,9 @@ def _create_agent_dynamic_road_attention_mask(agents, agents_valid,
                                               dynamic_road_valid):
     batch_size, num_agents, num_timesteps, _ = agents.size()
     _, num_dynamic_rg, _, _ = dynamic_road.size()
+    # Ensure mask is on the same device as agents
+    device = agents.device
+    
     # Create a mask for dynamic road and agents
     # [batch_size*num_timesteps, num_dynamic_rg]
     dynamic_road_mask = dynamic_road_valid.swapaxes(1, 2).reshape(
@@ -72,7 +81,7 @@ def _create_agent_dynamic_road_attention_mask(agents, agents_valid,
     agent_mask = agent_mask.unsqueeze(2).repeat(
         1, 1, num_dynamic_rg)
     # [batch_size*num_timesteps, num_dynamic_rg, num_agents]
-    dynamic_road_agent_mask = dynamic_road_mask * agent_mask
+    dynamic_road_agent_mask = (dynamic_road_mask * agent_mask).to(device)
 
     return dynamic_road_agent_mask
 

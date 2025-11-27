@@ -10,6 +10,9 @@ from models.transformer.layer_norm import LayerNorm
 
 def _create_agent_agent_attention_mask(future_agents, future_agents_valid):
     batch_size, num_agents, num_future_timesteps, _ = future_agents.size()
+    # Ensure mask is on the same device as future_agents
+    device = future_agents.device
+    
     # [batch_size*num_agents, num_future_timesteps, num_future_timesteps]
     time_attention_mask = future_agents_valid.reshape(
         batch_size * num_agents, num_future_timesteps
@@ -17,7 +20,8 @@ def _create_agent_agent_attention_mask(future_agents, future_agents_valid):
     # Create a mask such that agents don't look into the future
     # [batch_size*num_agents, num_future_timesteps, num_future_timesteps]
     zero_look_ahead_mask = torch.ones(
-        batch_size*num_agents, num_future_timesteps, num_future_timesteps)
+        batch_size*num_agents, num_future_timesteps, num_future_timesteps,
+        device=device, dtype=time_attention_mask.dtype)
     zero_look_ahead_mask = torch.tril(zero_look_ahead_mask)
     # [batch_size*num_agents, num_future_timesteps, num_future_timesteps]
     time_attention_mask = time_attention_mask * zero_look_ahead_mask
@@ -25,7 +29,7 @@ def _create_agent_agent_attention_mask(future_agents, future_agents_valid):
     # [batch_size*num_future_timesteps, num_agents, num_agents]
     agent_attention_mask = future_agents_valid.swapaxes(1, 2).reshape(
         batch_size*num_future_timesteps, num_agents
-    ).unsqueeze(-1).repeat(1, 1, num_agents)
+    ).unsqueeze(-1).repeat(1, 1, num_agents).to(device)
 
     return time_attention_mask, agent_attention_mask
 
@@ -36,6 +40,9 @@ def _create_encoded_agent_future_agent_attention_mask(encoded_agents,
                                                       future_agents_valid):
     batch_size, num_agents, num_encoded_timesteps, _ = encoded_agents.size()
     _, _, num_future_timesteps, _ = future_agents.size()
+    # Ensure mask is on the same device as future_agents
+    device = future_agents.device
+    
     # [batch_size*num_agents, num_encoded_timesteps]
     encoded_agents_mask = encoded_agents_valid.reshape(
         batch_size*num_agents, num_encoded_timesteps)
@@ -52,7 +59,7 @@ def _create_encoded_agent_future_agent_attention_mask(encoded_agents,
     )
 
     # [batch_size*num_agents, num_future_timesteps, num_encoded_timesteps]
-    return encoded_agents_mask * future_agents_mask
+    return (encoded_agents_mask * future_agents_mask).to(device)
 
 
 class DecoderLayer(nn.Module):
