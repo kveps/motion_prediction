@@ -37,7 +37,12 @@ class LSTMMotionDataset(Dataset):
         # Handle both local and GCS paths
         if data_path.startswith('gs://'):
             # For GCS paths, use TensorFlow's file matching
-            data_files = tf.io.gfile.glob(data_path + '*.tfrecord')
+            # Remove trailing slash if present
+            path = data_path.rstrip('/')
+            data_files = tf.io.gfile.glob(path + '/*.tfrecord')
+            if not data_files:
+                raise ValueError(f"No .tfrecord files found at {path}/*.tfrecord")
+            print(f"Found {len(data_files)} files in GCS")
         else:
             # For local paths, use the original method
             data_files = get_data_file_names(data_path)
@@ -114,7 +119,12 @@ class TransformerMotionDataset(Dataset):
         # Handle both local and GCS paths
         if data_path.startswith('gs://'):
             # For GCS paths, use TensorFlow's file matching
-            data_files = tf.io.gfile.glob(data_path + '*.tfrecord')
+            # Remove trailing slash if present
+            path = data_path.rstrip('/')
+            data_files = tf.io.gfile.glob(path + '/*.tfrecord')
+            if not data_files:
+                raise ValueError(f"No .tfrecord files found at {path}/*.tfrecord")
+            print(f"Found {len(data_files)} files in GCS")
         else:
             # For local paths, use the original method
             data_files = get_data_file_names(data_path)
