@@ -39,10 +39,34 @@ class LSTMMotionDataset(Dataset):
             # For GCS paths, use TensorFlow's file matching
             # Remove trailing slash if present
             path = data_path.rstrip('/')
-            data_files = tf.io.gfile.glob(path + '/*.tfrecord')
+            
+            # Try different file patterns
+            patterns_to_try = [
+                path + '/*.tfrecord',
+                path + '/*.tfrecord-*',  # Sharded tfrecords
+                path + '/training_tfexample.tfrecord@*',  # Waymo specific pattern
+                path + '/*',  # All files
+            ]
+            
+            data_files = []
+            for pattern in patterns_to_try:
+                data_files = tf.io.gfile.glob(pattern)
+                if data_files:
+                    print(f"Found {len(data_files)} files matching pattern: {pattern}")
+                    break
+            
             if not data_files:
-                raise ValueError(f"No .tfrecord files found at {path}/*.tfrecord")
-            print(f"Found {len(data_files)} files in GCS")
+                # List what's actually in the directory for debugging
+                try:
+                    contents = tf.io.gfile.listdir(path)
+                    print(f"Directory contents of {path}:")
+                    for item in contents[:10]:  # Show first 10 items
+                        print(f"  - {item}")
+                    if len(contents) > 10:
+                        print(f"  ... and {len(contents) - 10} more")
+                except Exception as e:
+                    print(f"Could not list directory: {e}")
+                raise ValueError(f"No files found at {path}. Tried patterns: {patterns_to_try}")
         else:
             # For local paths, use the original method
             data_files = get_data_file_names(data_path)
@@ -121,10 +145,34 @@ class TransformerMotionDataset(Dataset):
             # For GCS paths, use TensorFlow's file matching
             # Remove trailing slash if present
             path = data_path.rstrip('/')
-            data_files = tf.io.gfile.glob(path + '/*.tfrecord')
+            
+            # Try different file patterns
+            patterns_to_try = [
+                path + '/*.tfrecord',
+                path + '/*.tfrecord-*',  # Sharded tfrecords
+                path + '/training_tfexample.tfrecord@*',  # Waymo specific pattern
+                path + '/*',  # All files
+            ]
+            
+            data_files = []
+            for pattern in patterns_to_try:
+                data_files = tf.io.gfile.glob(pattern)
+                if data_files:
+                    print(f"Found {len(data_files)} files matching pattern: {pattern}")
+                    break
+            
             if not data_files:
-                raise ValueError(f"No .tfrecord files found at {path}/*.tfrecord")
-            print(f"Found {len(data_files)} files in GCS")
+                # List what's actually in the directory for debugging
+                try:
+                    contents = tf.io.gfile.listdir(path)
+                    print(f"Directory contents of {path}:")
+                    for item in contents[:10]:  # Show first 10 items
+                        print(f"  - {item}")
+                    if len(contents) > 10:
+                        print(f"  ... and {len(contents) - 10} more")
+                except Exception as e:
+                    print(f"Could not list directory: {e}")
+                raise ValueError(f"No files found at {path}. Tried patterns: {patterns_to_try}")
         else:
             # For local paths, use the original method
             data_files = get_data_file_names(data_path)
