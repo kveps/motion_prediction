@@ -157,7 +157,7 @@ if not args.test:
                 device=device,
             )
             future_agents_valid = torch.amax(
-                agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps)
+                agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps).to(device)
 
             optimizer.zero_grad()
             trajectories, probs = model(
@@ -204,7 +204,7 @@ if not args.test:
                     device=device,
                 )
                 future_agents_valid = torch.amax(
-                    agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps)
+                    agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps).to(device)
 
                 trajectories, probs = model(
                     agents, agents_valid, static_road, static_road_valid,
@@ -265,7 +265,7 @@ else:
                 device=device,
             )
             future_agents_valid = torch.amax(
-                agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps)
+                agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps).to(device)
 
             trajectories, probs = model(
                 agents, agents_valid, static_road, static_road_valid,
