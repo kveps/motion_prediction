@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from models.transformer.polyline_pointnet import PolylinePointNet
+from models.transformer.point_encoder import PointEncoder
 from models.transformer.context_encoder import ContextEncoder
 from models.transformer.positional_encoder import PositionalEncoder
 from models.transformer.prediction_decoder import PredictionDecoder
@@ -23,15 +24,17 @@ class Transformer_NN(nn.Module):
         self.num_future_features = num_future_features
         self.d_model = num_model_features
 
-        # Polyline embedding for all inputs (agent, static_rg, dynamic_rg)
+        # Polyline embedding for static road (true polyline with multiple points)
         self.static_rg_pointnet = PolylinePointNet(
             num_features_per_point=num_static_road_features,
             d_model=self.d_model)
-        self.dynamic_rg_pointnet = PolylinePointNet(
-            num_features_per_point=num_dynamic_road_features,
-            d_model=self.d_model)
-        self.past_agent_pointnet = PolylinePointNet(
+        
+        # Point encoding for agents and dynamic road (single point encoding, no aggregation)
+        self.past_agent_point_encoder = PointEncoder(
             num_features_per_point=num_agent_features,
+            d_model=self.d_model)
+        self.dynamic_rg_point_encoder = PointEncoder(
+            num_features_per_point=num_dynamic_road_features,
             d_model=self.d_model)
 
         # Positional embedding for all inputs
@@ -40,8 +43,8 @@ class Transformer_NN(nn.Module):
             num_timesteps=num_past_timesteps,
         )
 
-        # Polyline embedding for future
-        self.future_agent_pointnet = PolylinePointNet(
+        # Point encoding for future agents (single point encoding, no aggregation)
+        self.future_agent_point_encoder = PointEncoder(
             num_features_per_point=num_future_features,
             d_model=self.d_model)
 
@@ -73,7 +76,7 @@ class Transformer_NN(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, agents, agents_valid, static_road, static_road_valid, dynamic_road, dynamic_road_valid, future_agents, future_agents_valid):
-        # Polyline embeddings
+        # Point/Polyline embeddings
         #
         agent_embeddings = torch.zeros(
             (agents.size(0), agents.size(1), agents.size(2), self.d_model), 
@@ -82,11 +85,12 @@ class Transformer_NN(nn.Module):
             (dynamic_road.size(0), dynamic_road.size(1), dynamic_road.size(2), self.d_model),
             device=dynamic_road.device, dtype=dynamic_road.dtype)
         for t in range(self.num_past_timesteps):
-            agents_at_t = agents[..., t, :].unsqueeze(dim=-2)
-            dynamic_road_at_t = dynamic_road[..., t, :].unsqueeze(dim=-2)
-            agent_embeddings[..., t, :] = self.past_agent_pointnet(agents_at_t)
-            dynamic_rg_embedding[..., t, :] = self.dynamic_rg_pointnet(
-                dynamic_road_at_t)
+            agents_at_t = agents[..., t, :]  # [batch_size, num_agents, num_features]
+            dynamic_road_at_t = dynamic_road[..., t, :]  # [batch_size, num_dynamic_rg, num_features]
+            agent_embeddings[..., t, :] = self.past_agent_point_encoder(agents_at_t)
+            dynamic_rg_embedding[..., t, :] = self.dynamic_rg_point_encoder(dynamic_road_at_t)
+        
+        # Static road is a true polyline with multiple points per polyline
         static_rg_embedding = self.static_rg_pointnet(static_road).unsqueeze(
             dim=-2
         ).repeat(1, 1, self.num_past_timesteps, 1)
@@ -108,16 +112,15 @@ class Transformer_NN(nn.Module):
             dynamic_road_valid
         )
 
-        # Polyline embeddings for future
+        # Point encoding for future agents (no sequence aggregation needed)
         future_agent_embeddings = torch.zeros(
             (future_agents.size(0), future_agents.size(
                 1), future_agents.size(2), self.d_model),
             device=future_agents.device, dtype=future_agents.dtype
         )
         for t in range(self.num_future_timesteps):
-            future_agents_at_t = future_agents[..., t, :].unsqueeze(dim=-2)
-            future_agent_embeddings[..., t, :] = self.future_agent_pointnet(
-                future_agents_at_t)
+            future_agents_at_t = future_agents[..., t, :]  # [batch_size, num_agents, num_features]
+            future_agent_embeddings[..., t, :] = self.future_agent_point_encoder(future_agents_at_t)
 
         # Positional encoding
         future_agent_embeddings = self.future_positional_encoding(
