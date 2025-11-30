@@ -148,23 +148,23 @@ if not args.test:
             agent_target = dataset_element['agent_target'].to(device)
             agent_target_valid = dataset_element['agent_target_valid'].to(
                 device)
+            tracks_to_predict = dataset_element['tracks_to_predict'].to(device)
 
             # initialize future agents and valid
             batch_size, num_agents, _, _ = agents.size()
-            future_agents = torch.zeros(
+            future_agents = torch.randn(
                 (batch_size, num_agents, num_future_timesteps, num_future_features),
                 dtype=torch.float32,
                 device=device,
             )
-            future_agents_valid = torch.amax(
-                agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps).to(device)
+            future_agents_valid = torch.ones_like(agents_valid).to(device)
 
             optimizer.zero_grad()
             trajectories, probs = model(
                 agents, agents_valid, static_road, static_road_valid,
                 dynamic_road, dynamic_road_valid, future_agents, future_agents_valid
             )
-            loss = loss_fn(trajectories, probs, agent_target, agent_target_valid)
+            loss = loss_fn(trajectories, probs, agent_target, agent_target_valid, tracks_to_predict)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
@@ -195,22 +195,22 @@ if not args.test:
                 agent_target = dataset_element['agent_target'].to(device)
                 agent_target_valid = dataset_element['agent_target_valid'].to(
                     device)
+                tracks_to_predict = dataset_element['tracks_to_predict'].to(device)
 
                 # initialize future agents and valid
                 batch_size, num_agents, _, _ = agents.size()
-                future_agents = torch.zeros(
+                future_agents = torch.randn(
                     (batch_size, num_agents, num_future_timesteps, num_future_features),
                     dtype=torch.float32,
                     device=device,
                 )
-                future_agents_valid = torch.amax(
-                    agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps).to(device)
+                future_agents_valid = torch.ones_like(agents_valid).to(device)
 
                 trajectories, probs = model(
                     agents, agents_valid, static_road, static_road_valid,
                     dynamic_road, dynamic_road_valid, future_agents, future_agents_valid
                 )
-                loss = loss_fn(trajectories, probs, agent_target, agent_target_valid)
+                loss = loss_fn(trajectories, probs, agent_target, agent_target_valid, tracks_to_predict)
                 val_loss += loss.item()
 
         avg_val_loss = val_loss / len(validation_dataloader)
@@ -256,22 +256,22 @@ else:
             agent_target = dataset_element['agent_target'].to(device)
             agent_target_valid = dataset_element['agent_target_valid'].to(
                 device)
+            tracks_to_predict = dataset_element['tracks_to_predict'].to(device)
 
             # initialize future agents and valid
             batch_size, num_agents, _, _ = agents.size()
-            future_agents = torch.zeros(
+            future_agents = torch.randn(
                 (batch_size, num_agents, num_future_timesteps, num_future_features),
                 dtype=torch.float32,
                 device=device,
             )
-            future_agents_valid = torch.amax(
-                agents_valid, dim=-1, keepdim=True).repeat(1, 1, num_future_timesteps).to(device)
+            future_agents_valid = torch.ones_like(agents_valid).to(device)
 
             trajectories, probs = model(
                 agents, agents_valid, static_road, static_road_valid,
                 dynamic_road, dynamic_road_valid, future_agents, future_agents_valid
             )
-            loss = loss_fn(trajectories, probs, agent_target, agent_target_valid)
+            loss = loss_fn(trajectories, probs, agent_target, agent_target_valid, tracks_to_predict)
             test_loss += loss.item()
 
             # Visualize the model inputs and outputs

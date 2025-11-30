@@ -133,6 +133,7 @@ class Transformer_NN(nn.Module):
              self.num_future_trajectories, 1),
             device=future_agents.device, dtype=future_agents.dtype
         )
+
         for i in range(self.num_future_trajectories):
             decoder_outputs = self.transformer_decoders[i](
                 context_encoded_agents,

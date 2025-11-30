@@ -10,7 +10,8 @@ class NLL_Loss(nn.Module):
                 predicted_trajectories,
                 predicted_probabilities,
                 ground_truth_trajectory,
-                ground_truth_states_valid):
+                ground_truth_states_valid,
+                tracks_to_predict):
         ade_per_mode = self._compute_ade_per_trajectory(
             predicted_trajectories,
             ground_truth_trajectory,
@@ -20,10 +21,14 @@ class NLL_Loss(nn.Module):
             self.weighted_nll_loss(
                 ade_per_mode,
                 predicted_probabilities,
-                ground_truth_states_valid) +
+                ground_truth_states_valid,
+                tracks_to_predict) +
             self.min_ade_loss(ade_per_mode,
-                              ground_truth_states_valid) +
-            self.diversity_Loss(predicted_trajectories)
+                              ground_truth_states_valid,
+                              tracks_to_predict) +
+            self.diversity_Loss(predicted_trajectories,
+                               ground_truth_states_valid,
+                               tracks_to_predict)
         )
 
     def _compute_ade_per_trajectory(self, predicted_trajectories,
@@ -77,9 +82,11 @@ class NLL_Loss(nn.Module):
 
     def weighted_nll_loss(self, ade_per_mode,
                           predicted_probabilities,
-                          ground_truth_states_valid):
+                          ground_truth_states_valid,
+                          tracks_to_predict):
         """
         Computes the weighted NLL loss for trajectory prediction.
+        Only counts loss for valid timesteps and predicted tracks.
 
         Args:
             ade_per_mode: [batch_size, num_agents, num_trajectories].
@@ -88,6 +95,7 @@ class NLL_Loss(nn.Module):
             ground_truth_states_valid: 
             [batch_size, num_agents, num_timesteps] storing validity 
             information for each state.
+            tracks_to_predict: [batch_size, num_agents] boolean mask for agents to predict.
 
         Returns:
             Total loss (scalar).
@@ -101,25 +109,35 @@ class NLL_Loss(nn.Module):
         # [batch_size, num_agents]
         weighted_nll = (nll_loss * ade_per_mode).mean(dim=-1)
 
-        # Calculate the mean loss across all active agents.
-        # Compute invalid agents as one with no timestamp valid
-        # [batch_size]
-        valid_agents = ground_truth_states_valid.amax(dim=-1)
-        valid_agent_count = valid_agents.sum()
-        weighted_nll_loss = weighted_nll.sum() / valid_agent_count
+        # Calculate the mean loss only for valid timesteps and agents.
+        # [batch_size, num_agents, num_timesteps] -> [batch_size, num_agents]
+        valid_per_agent = ground_truth_states_valid.sum(dim=-1)
+        
+        # Only include agents that have at least one valid timestep and are marked to predict
+        # [batch_size, num_agents]
+        valid_agents_mask = (valid_per_agent > 0) & tracks_to_predict.bool()
+        
+        # Sum weighted_nll only for valid agents
+        if valid_agents_mask.sum() > 0:
+            weighted_nll_loss = weighted_nll[valid_agents_mask].sum() / valid_agents_mask.sum()
+        else:
+            weighted_nll_loss = torch.tensor(0.0, device=weighted_nll.device)
 
         return weighted_nll_loss
 
     def min_ade_loss(self,
                      ade_per_mode,
-                     ground_truth_states_valid):
+                     ground_truth_states_valid,
+                     tracks_to_predict):
         """
         Computes the minimum ADE loss for trajectory prediction.
+        Only counts loss for valid timesteps and predicted tracks.
 
         Args:
             ade_per_mode: [batch_size, num_agents, num_trajectories].
             ground_truth_states_valid: [batch_size, num_agents, num_timesteps] 
             storing validity information for each state.
+            tracks_to_predict: [batch_size, num_agents] boolean mask for agents to predict.
 
         Returns:
             Total loss (scalar).
@@ -128,20 +146,32 @@ class NLL_Loss(nn.Module):
         # [batch_size, num_agents]
         min_ade, _ = torch.min(ade_per_mode, dim=-1)
 
-        # Calculate the mean loss across all active agents.
-        # Compute invalid agents as one with no timestamp valid
-        # [batch_size]
-        valid_agents = ground_truth_states_valid.amax(dim=-1)
-        valid_agent_count = valid_agents.sum()
-        min_ade_loss = min_ade.sum() / valid_agent_count
+        # Calculate the mean loss only for valid timesteps and agents.
+        # [batch_size, num_agents, num_timesteps] -> [batch_size, num_agents]
+        valid_per_agent = ground_truth_states_valid.sum(dim=-1)
+        
+        # Only include agents that have at least one valid timestep and are marked to predict
+        # [batch_size, num_agents]
+        valid_agents_mask = (valid_per_agent > 0) & tracks_to_predict.bool()
+        
+        # Sum min_ade only for valid agents
+        if valid_agents_mask.sum() > 0:
+            min_ade_loss = min_ade[valid_agents_mask].sum() / valid_agents_mask.sum()
+        else:
+            min_ade_loss = torch.tensor(0.0, device=min_ade.device)
 
         return min_ade_loss
 
-    def diversity_Loss(self, predicted_trajectories):
+    def diversity_Loss(self, predicted_trajectories, ground_truth_states_valid, tracks_to_predict):
         """
         Encourages diversity by penalizing similar trajectories.
+        Only computes loss for valid timesteps and predicted tracks.
 
-        predicted_trajectories: (batch_size, num_agents, num_trajectories, timesteps, 3)
+        Args:
+            predicted_trajectories: (batch_size, num_agents, num_trajectories, timesteps, 3)
+            ground_truth_states_valid: [batch_size, num_agents, num_timesteps] 
+            storing validity information for each state.
+            tracks_to_predict: [batch_size, num_agents] boolean mask for agents to predict.
         """
         num_trajs = predicted_trajectories.size(dim=-3)
         diversity_loss = 0.0
@@ -151,12 +181,27 @@ class NLL_Loss(nn.Module):
 
         for i in range(num_trajs):
             for j in range(i + 1, num_trajs):
+                # Compute pairwise distances
+                # [batch_size, num_agents, num_timesteps]
                 pairwise_dist = torch.norm(
                     predicted_trajectories[..., i, :, :2] -
-                    predicted_trajectories[..., j, :, :2], dim=-1).mean()
-                # Penalize trajectories that are too close
-                diversity_loss += torch.exp(-pairwise_dist)
+                    predicted_trajectories[..., j, :, :2], dim=-1)
+                
+                # Mask out invalid timesteps and non-predicted tracks
+                # [batch_size, num_agents, num_timesteps]
+                masked_dist = pairwise_dist * ground_truth_states_valid
+                # [batch_size, num_agents, 1]
+                agent_mask = tracks_to_predict.bool().unsqueeze(-1)
+                masked_dist = masked_dist * agent_mask
+                
+                # Compute mean only over valid timesteps and agents
+                valid_count = (ground_truth_states_valid * agent_mask).sum()
+                if valid_count > 0:
+                    mean_dist = masked_dist.sum() / valid_count
+                    # Penalize trajectories that are too close
+                    diversity_loss += torch.exp(-mean_dist)
 
-        diversity_loss /= (num_trajs * (num_trajs - 1)) / \
-            2  # Normalize over number of pairs
+        if num_trajs >= 2:
+            diversity_loss /= (num_trajs * (num_trajs - 1)) / 2  # Normalize over number of pairs
+        
         return diversity_loss
