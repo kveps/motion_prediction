@@ -403,15 +403,21 @@ def visualize_model_inputs_and_output(model_input, model_output,
     num_agents_to_predict = agent_input.shape[0]
     colors = cm.get_cmap('tab20', max(num_agents_to_predict, 2))
     
-    # Plot agent input and target points per agent with different colors
+    # Plot agent input and target trajectories together (same style per agent)
     for agent_idx in range(num_agents_to_predict):
         color = colors(agent_idx)
-        # Plot input as solid line with circles
-        plt.plot(agent_input_x[agent_idx], agent_input_y[agent_idx],
-                 'o-', color=color, markersize=4, linewidth=1.5, alpha=0.7)
-        # Plot target as dashed line with X markers
-        plt.plot(agent_target_x[agent_idx], agent_target_y[agent_idx],
-                 'x--', color=color, markersize=5, linewidth=1.5, alpha=0.7)
+        
+        # Combined past + current + future trajectory
+        combined_x = np.concatenate([agent_input_x[agent_idx], agent_target_x[agent_idx]])
+        combined_y = np.concatenate([agent_input_y[agent_idx], agent_target_y[agent_idx]])
+        
+        # Plot as a thin solid line
+        plt.plot(combined_x, combined_y, color=color, linewidth=0.8, alpha=0.8)
+        
+        # Mark the current state (last point of input) with a small rectangle
+        current_x = agent_input_x[agent_idx, -1]
+        current_y = agent_input_y[agent_idx, -1]
+        plt.plot(current_x, current_y, 's', color=color, markersize=2, alpha=0.9)
 
     ############### Agents output ################
 
@@ -435,9 +441,8 @@ def visualize_model_inputs_and_output(model_input, model_output,
         agent_output_y = agent_output_traj[:, 1].detach().cpu().numpy()
         
         color = colors(agent_idx)
-        # Plot model output as dotted line with square markers
-        plt.plot(agent_output_x, agent_output_y,
-                 's:', color=color, markersize=3, linewidth=1.5, alpha=0.7)
+        # Plot model output as dashed line (same thickness as road polylines)
+        plt.plot(agent_output_x, agent_output_y, '--', color=color, linewidth=0.8, alpha=0.8)
 
     ################ Static road polylines ################
 
@@ -446,7 +451,7 @@ def visualize_model_inputs_and_output(model_input, model_output,
     static_roadgraph = model_input['static_roadgraph_input'][index_in_batch, ...]
     static_roadgraph_valid = model_input['static_roadgraph_valid'][index_in_batch, :, :].bool()
     
-    # Plot each polyline separately
+    # Plot each polyline separately with alternating shades of gray
     num_polylines = static_roadgraph.shape[0]
     for polyline_idx in range(num_polylines):
         polyline = static_roadgraph[polyline_idx, ...]
@@ -459,8 +464,12 @@ def visualize_model_inputs_and_output(model_input, model_output,
             if len(valid_points) > 0:
                 x_coords = valid_points[:, 0].detach().cpu().numpy()
                 y_coords = valid_points[:, 1].detach().cpu().numpy()
+                
+                # Alternate between two shades of gray
+                gray_shade = 0.3 if polyline_idx % 2 == 0 else 0.5
+                
                 # Plot polyline as a continuous line
-                plt.plot(x_coords, y_coords, 'k-', linewidth=0.8, alpha=0.4)
+                plt.plot(x_coords, y_coords, color=str(gray_shade), linewidth=0.8, alpha=0.6)
 
     # Beautify
 
@@ -495,15 +504,15 @@ def visualize_model_inputs_and_output(model_input, model_output,
     plt.ylabel('Y (m)', fontsize=11)
     plt.title('Transformer Model: Input and Output Visualization', fontsize=12, fontweight='bold')
     
-    # Create custom legend with line styles only (not per agent)
+    # Create custom legend
     from matplotlib.lines import Line2D
     legend_elements = [
-        Line2D([0], [0], marker='o', color='gray', markerfacecolor='gray', markersize=6, label='Input Trajectory', linestyle='-', linewidth=2),
-        Line2D([0], [0], marker='x', color='gray', markerfacecolor='gray', markersize=8, label='Target Trajectory', linestyle='--', linewidth=2),
-        Line2D([0], [0], marker='s', color='gray', markerfacecolor='gray', markersize=5, label='Model Output', linestyle=':', linewidth=2),
-        Line2D([0], [0], color='k', linewidth=1.5, label='Road Polylines', alpha=0.6),
+        Line2D([0], [0], color='gray', linewidth=0.8, label='Agent Trajectory (Input + Target)'),
+        Line2D([0], [0], marker='s', color='w', markerfacecolor='gray', markersize=2, label='Current State', linestyle='none'),
+        Line2D([0], [0], color='gray', linewidth=0.8, linestyle='--', label='Model Output (Highest Prob)'),
+        Line2D([0], [0], color='k', linewidth=0.8, label='Road Polylines', alpha=0.6),
     ]
-    plt.legend(handles=legend_elements, loc='upper right', fontsize=10, framealpha=0.95, edgecolor='black')
+    plt.legend(handles=legend_elements, loc='upper right', fontsize=9, framealpha=0.95, edgecolor='black')
     
     plt.axis('equal')  # Ensure equal scaling for x and y axes
     plt.grid(True, alpha=0.3)
