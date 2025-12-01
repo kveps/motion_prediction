@@ -32,10 +32,12 @@ parser.add_argument('--model-path', type=str, default=None,
                     help='Path to model weights for testing')
 parser.add_argument('--epochs', type=int, default=100,
                     help='Number of training epochs (default: 100)')
-parser.add_argument('--batch-size', type=int, default=5,
-                    help='Batch size for training/validation (default: 5)')
+parser.add_argument('--batch-size', type=int, default=2,
+                    help='Batch size for training/validation (default: 2)')
 parser.add_argument('--lr', type=float, default=0.01,
                     help='Learning rate (default: 0.01)')
+parser.add_argument('--debug', action='store_true',
+                    help='Run with only 2 batches for debugging')
 args = parser.parse_args()
 
 # Determine the device to use
@@ -85,27 +87,29 @@ print(f"Testing samples: {len(test_dataset)}")
 
 # Setup necessary input sizes for the model
 dummy_element = training_dataset[0]
-agent_input = dummy_element['agent_input']
+agent_input_continuous = dummy_element['agent_input_continuous']
 static_roadgraph_input = dummy_element['static_roadgraph_polyline_input']
-dynamic_roadgraph_input = dummy_element['dynamic_roadgraph_input']
+dynamic_roadgraph_continuous = dummy_element['dynamic_roadgraph_continuous']
 agent_target = dummy_element['agent_target']
-agent_target_valid = dummy_element['agent_target_valid']
 
-num_agent_features = agent_input.size(dim=-1)
+# Get feature dimensions (continuous only, categorical are embedded separately)
+num_agent_continuous_features = agent_input_continuous.size(dim=-1)
 num_static_roadgraph_features = static_roadgraph_input.size(dim=-1)
-num_dynamic_roadgraph_features = dynamic_roadgraph_input.size(dim=-1)
-num_past_timesteps = agent_input.size(dim=-2)
+num_dynamic_roadgraph_continuous_features = dynamic_roadgraph_continuous.size(dim=-1)
+num_past_timesteps = agent_input_continuous.size(dim=-2)
 num_future_features = agent_target.size(dim=-1)
 num_future_timesteps = agent_target.size(dim=-2)
 num_future_trajectories = 1
 num_model_features = 256
+categorical_embedding_dim = 16
 
 # Setup model inputs and outputs
-model = Transformer_NN(num_agent_features=num_agent_features,
+model = Transformer_NN(num_agent_features=num_agent_continuous_features,
                        num_static_road_features=num_static_roadgraph_features,
-                       num_dynamic_road_features=num_dynamic_roadgraph_features,
+                       num_dynamic_road_features=num_dynamic_roadgraph_continuous_features,
                        num_past_timesteps=num_past_timesteps,
                        num_model_features=num_model_features,
+                       categorical_embedding_dim=categorical_embedding_dim,
                        num_future_trajectories=num_future_trajectories,
                        num_future_timesteps=num_future_timesteps,
                        num_future_features=num_future_features)
@@ -132,37 +136,36 @@ if not args.test:
         print(f"{'='*50}")
         
         for batch_idx, dataset_element in enumerate(training_dataloader):
-            # fetch inputs
-            agents = dataset_element['agent_input'].to(device)
+            # Debug mode: only run 2 batches
+            if args.debug and batch_idx >= 2:
+                break
+                
+            # Fetch separated continuous and categorical features
+            agents_cont = dataset_element['agent_input_continuous'].to(device)
+            agents_cat = dataset_element['agent_input_categorical'].to(device)
             agents_valid = dataset_element['agent_input_valid'].to(device)
-            static_road = dataset_element['static_roadgraph_polyline_input'].to(
-                device)
-            static_road_valid = dataset_element['static_roadgraph_polyline_valid'].to(
-                device
-            )
-            dynamic_road = dataset_element['dynamic_roadgraph_input'].to(
-                device)
-            dynamic_road_valid = dataset_element['dynamic_roadgraph_valid'].to(
-                device
-            )
+            static_road = dataset_element['static_roadgraph_polyline_input'].to(device)
+            static_road_valid = dataset_element['static_roadgraph_polyline_valid'].to(device)
+            dyn_road_cont = dataset_element['dynamic_roadgraph_continuous'].to(device)
+            dyn_road_cat = dataset_element['dynamic_roadgraph_categorical'].to(device)
+            dyn_road_valid = dataset_element['dynamic_roadgraph_valid'].to(device)
             agent_target = dataset_element['agent_target'].to(device)
-            agent_target_valid = dataset_element['agent_target_valid'].to(
-                device)
+            agent_target_valid = dataset_element['agent_target_valid'].to(device)
             tracks_to_predict = dataset_element['tracks_to_predict'].to(device)
 
-            # initialize future agents and valid
-            batch_size, num_agents, _, _ = agents.size()
+            # Initialize future agents
+            batch_size, num_agents, _, _ = agents_cont.size()
             future_agents = torch.randn(
                 (batch_size, num_agents, num_future_timesteps, num_future_features),
-                dtype=torch.float32,
-                device=device,
-            )
-            future_agents_valid = torch.ones_like(agents_valid).to(device)
+                dtype=torch.float32, device=device)
+            future_agents_valid = torch.ones([batch_size, num_agents, num_future_timesteps], dtype=torch.float32, device=device)                
 
             optimizer.zero_grad()
             trajectories, probs = model(
-                agents, agents_valid, static_road, static_road_valid,
-                dynamic_road, dynamic_road_valid, future_agents, future_agents_valid
+                agents_cont, agents_cat, agents_valid,
+                static_road, static_road_valid,
+                dyn_road_cont, dyn_road_cat, dyn_road_valid,
+                future_agents, future_agents_valid
             )
             loss = loss_fn(trajectories, probs, agent_target, agent_target_valid, tracks_to_predict)
             loss.backward()
@@ -172,43 +175,38 @@ if not args.test:
             if (batch_idx + 1) % 10 == 0:
                 print(f"Batch [{batch_idx+1}/{len(training_dataloader)}], Loss: {loss.item():.4f}")
 
-        avg_train_loss = train_loss / len(training_dataloader)
+        avg_train_loss = train_loss / max(1, batch_idx + 1)  # Fixed denominator for debug mode
 
         # Validation
         model.eval()  # Set model to evaluation mode
         val_loss = 0.0
         with torch.no_grad():
             for dataset_element in validation_dataloader:
-                # fetch inputs
-                agents = dataset_element['agent_input'].to(device)
+                # Fetch separated continuous and categorical features
+                agents_cont = dataset_element['agent_input_continuous'].to(device)
+                agents_cat = dataset_element['agent_input_categorical'].to(device)
                 agents_valid = dataset_element['agent_input_valid'].to(device)
-                static_road = dataset_element['static_roadgraph_polyline_input'].to(
-                    device)
-                static_road_valid = dataset_element['static_roadgraph_polyline_valid'].to(
-                    device
-                )
-                dynamic_road = dataset_element['dynamic_roadgraph_input'].to(
-                    device)
-                dynamic_road_valid = dataset_element['dynamic_roadgraph_valid'].to(
-                    device
-                )
+                static_road = dataset_element['static_roadgraph_polyline_input'].to(device)
+                static_road_valid = dataset_element['static_roadgraph_polyline_valid'].to(device)
+                dyn_road_cont = dataset_element['dynamic_roadgraph_continuous'].to(device)
+                dyn_road_cat = dataset_element['dynamic_roadgraph_categorical'].to(device)
+                dyn_road_valid = dataset_element['dynamic_roadgraph_valid'].to(device)
                 agent_target = dataset_element['agent_target'].to(device)
-                agent_target_valid = dataset_element['agent_target_valid'].to(
-                    device)
+                agent_target_valid = dataset_element['agent_target_valid'].to(device)
                 tracks_to_predict = dataset_element['tracks_to_predict'].to(device)
 
-                # initialize future agents and valid
-                batch_size, num_agents, _, _ = agents.size()
+                # Initialize future agents
+                batch_size, num_agents, _, _ = agents_cont.size()
                 future_agents = torch.randn(
                     (batch_size, num_agents, num_future_timesteps, num_future_features),
-                    dtype=torch.float32,
-                    device=device,
-                )
-                future_agents_valid = torch.ones_like(agents_valid).to(device)
+                    dtype=torch.float32, device=device)
+                future_agents_valid = torch.ones([batch_size, num_agents, num_future_timesteps], dtype=torch.float32, device=device)
 
                 trajectories, probs = model(
-                    agents, agents_valid, static_road, static_road_valid,
-                    dynamic_road, dynamic_road_valid, future_agents, future_agents_valid
+                    agents_cont, agents_cat, agents_valid,
+                    static_road, static_road_valid,
+                    dyn_road_cont, dyn_road_cat, dyn_road_valid,
+                    future_agents, future_agents_valid
                 )
                 loss = loss_fn(trajectories, probs, agent_target, agent_target_valid, tracks_to_predict)
                 val_loss += loss.item()
@@ -240,36 +238,31 @@ else:
     test_loss = 0.0
     with torch.no_grad():
         for dataset_element in test_dataloader:
-            # fetch inputs
-            agents = dataset_element['agent_input'].to(device)
+            # Fetch separated continuous and categorical features
+            agents_cont = dataset_element['agent_input_continuous'].to(device)
+            agents_cat = dataset_element['agent_input_categorical'].to(device)
             agents_valid = dataset_element['agent_input_valid'].to(device)
-            static_road = dataset_element['static_roadgraph_polyline_input'].to(
-                device)
-            static_road_valid = dataset_element['static_roadgraph_polyline_valid'].to(
-                device
-            )
-            dynamic_road = dataset_element['dynamic_roadgraph_input'].to(
-                device)
-            dynamic_road_valid = dataset_element['dynamic_roadgraph_valid'].to(
-                device
-            )
+            static_road = dataset_element['static_roadgraph_polyline_input'].to(device)
+            static_road_valid = dataset_element['static_roadgraph_polyline_valid'].to(device)
+            dyn_road_cont = dataset_element['dynamic_roadgraph_continuous'].to(device)
+            dyn_road_cat = dataset_element['dynamic_roadgraph_categorical'].to(device)
+            dyn_road_valid = dataset_element['dynamic_roadgraph_valid'].to(device)
             agent_target = dataset_element['agent_target'].to(device)
-            agent_target_valid = dataset_element['agent_target_valid'].to(
-                device)
+            agent_target_valid = dataset_element['agent_target_valid'].to(device)
             tracks_to_predict = dataset_element['tracks_to_predict'].to(device)
 
-            # initialize future agents and valid
-            batch_size, num_agents, _, _ = agents.size()
+            # Initialize future agents
+            batch_size, num_agents, _, _ = agents_cont.size()
             future_agents = torch.randn(
                 (batch_size, num_agents, num_future_timesteps, num_future_features),
-                dtype=torch.float32,
-                device=device,
-            )
-            future_agents_valid = torch.ones_like(agents_valid).to(device)
+                dtype=torch.float32, device=device)
+            future_agents_valid = torch.ones([batch_size, num_agents, num_future_timesteps], dtype=torch.float32, device=device)
 
             trajectories, probs = model(
-                agents, agents_valid, static_road, static_road_valid,
-                dynamic_road, dynamic_road_valid, future_agents, future_agents_valid
+                agents_cont, agents_cat, agents_valid,
+                static_road, static_road_valid,
+                dyn_road_cont, dyn_road_cat, dyn_road_valid,
+                future_agents, future_agents_valid
             )
             loss = loss_fn(trajectories, probs, agent_target, agent_target_valid, tracks_to_predict)
             test_loss += loss.item()

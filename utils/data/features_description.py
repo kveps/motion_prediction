@@ -8,6 +8,32 @@ NUM_FUTURE_STATES = 80
 NUM_AGENTS = 128
 NUM_TL_STATES = 16
 
+# Agent Types (5 types):
+# TYPE_UNSET = 0;  // This is an invalid state that indicates an error.
+# TYPE_VEHICLE = 1;
+# TYPE_PEDESTRIAN = 2;
+# TYPE_CYCLIST = 3;
+# TYPE_OTHER = 4;
+NUM_AGENT_CATEGORIES = 5 
+
+# Traffic Light States (9 types):
+# LANE_STATE_UNKNOWN = 0;
+
+# // States for traffic signals with arrows.
+# LANE_STATE_ARROW_STOP = 1;
+# LANE_STATE_ARROW_CAUTION = 2;
+# LANE_STATE_ARROW_GO = 3;
+
+# // Standard round traffic signals.
+# LANE_STATE_STOP = 4;
+# LANE_STATE_CAUTION = 5;
+# LANE_STATE_GO = 6;
+
+# // Flashing light signals.
+# LANE_STATE_FLASHING_STOP = 7;
+# LANE_STATE_FLASHING_CAUTION = 8;
+NUM_TL_CATEGORIES = 9 
+
 # Static roadgraph features
 static_roadgraph_features = {
     'roadgraph_samples/dir': tf.io.FixedLenFeature(

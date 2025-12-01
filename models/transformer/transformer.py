@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from models.transformer.polyline_pointnet import PolylinePointNet
 from models.transformer.point_encoder import PointEncoder
+from models.transformer.categorical_embedder import CategoricalEmbedder
 from models.transformer.context_encoder import ContextEncoder
 from models.transformer.positional_encoder import PositionalEncoder
 from models.transformer.prediction_decoder import PredictionDecoder
@@ -13,6 +14,7 @@ class Transformer_NN(nn.Module):
                  num_dynamic_road_features,
                  num_past_timesteps,
                  num_model_features,
+                 categorical_embedding_dim,
                  num_future_trajectories,
                  num_future_timesteps,
                  num_future_features):
@@ -23,19 +25,24 @@ class Transformer_NN(nn.Module):
         self.num_future_timesteps = num_future_timesteps
         self.num_future_features = num_future_features
         self.d_model = num_model_features
+        self.categorical_embedding_dim = categorical_embedding_dim
 
         # Polyline embedding for static road (true polyline with multiple points)
         self.static_rg_pointnet = PolylinePointNet(
             num_features_per_point=num_static_road_features,
             d_model=self.d_model)
         
-        # Point encoding for agents and dynamic road (single point encoding, no aggregation)
+        # Point encoding for agents and dynamic road (continuous features only)
+        # Categorical features will be embedded separately and concatenated
         self.past_agent_point_encoder = PointEncoder(
             num_features_per_point=num_agent_features,
-            d_model=self.d_model)
+            d_model=self.d_model - self.categorical_embedding_dim)  
         self.dynamic_rg_point_encoder = PointEncoder(
             num_features_per_point=num_dynamic_road_features,
-            d_model=self.d_model)
+            d_model=self.d_model - self.categorical_embedding_dim)
+        
+        # Categorical embeddings
+        self.categorical_embedder = CategoricalEmbedder(embedding_dim=self.categorical_embedding_dim)
 
         # Positional embedding for all inputs
         self.context_positional_encoding = PositionalEncoder(
@@ -75,32 +82,50 @@ class Transformer_NN(nn.Module):
         ])
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, agents, agents_valid, static_road, static_road_valid, dynamic_road, dynamic_road_valid, future_agents, future_agents_valid):
-        # Point/Polyline embeddings
-        #
+    def forward(self, agents_continuous, agents_categorical, agents_valid, 
+                static_road, static_road_valid, 
+                dynamic_road_continuous, dynamic_road_categorical, dynamic_road_valid, 
+                future_agents, future_agents_valid):
+        # Encode past context
         agent_embeddings = torch.zeros(
-            (agents.size(0), agents.size(1), agents.size(2), self.d_model), 
-            device=agents.device, dtype=agents.dtype)
+            (agents_continuous.size(0), agents_continuous.size(1), agents_continuous.size(2), self.d_model),
+            device=agents_continuous.device, dtype=agents_continuous.dtype)
         dynamic_rg_embedding = torch.zeros(
-            (dynamic_road.size(0), dynamic_road.size(1), dynamic_road.size(2), self.d_model),
-            device=dynamic_road.device, dtype=dynamic_road.dtype)
-        for t in range(self.num_past_timesteps):
-            agents_at_t = agents[..., t, :]  # [batch_size, num_agents, num_features]
-            dynamic_road_at_t = dynamic_road[..., t, :]  # [batch_size, num_dynamic_rg, num_features]
-            agent_embeddings[..., t, :] = self.past_agent_point_encoder(agents_at_t)
-            dynamic_rg_embedding[..., t, :] = self.dynamic_rg_point_encoder(dynamic_road_at_t)
+            (dynamic_road_continuous.size(0), dynamic_road_continuous.size(1), dynamic_road_continuous.size(2), self.d_model),
+            device=dynamic_road_continuous.device, dtype=dynamic_road_continuous.dtype)
         
-        # Static road is a true polyline with multiple points per polyline
+        for t in range(self.num_past_timesteps):
+            # Agent continuous encoding
+            agents_cont_t = agents_continuous[..., t, :]  
+            agents_cont_emb = self.past_agent_point_encoder(agents_cont_t) 
+            
+            # Agent categorical embedding
+            agents_cat_t = agents_categorical[..., t]  
+            agents_cat_emb = self.categorical_embedder(agent_type=agents_cat_t)['agent_type'] 
+            
+            # Concatenate
+            agent_embeddings[..., t, :] = torch.cat([agents_cont_emb, agents_cat_emb], dim=-1)
+            
+            # Dynamic road continuous encoding
+            dyn_cont_t = dynamic_road_continuous[..., t, :]  
+            dyn_cont_emb = self.dynamic_rg_point_encoder(dyn_cont_t)  
+            
+            # Dynamic road categorical embedding
+            dyn_cat_t = dynamic_road_categorical[..., t]  
+            dyn_cat_emb = self.categorical_embedder(traffic_light_state=dyn_cat_t)['traffic_light']  
+            
+            # Concatenate
+            dynamic_rg_embedding[..., t, :] = torch.cat([dyn_cont_emb, dyn_cat_emb], dim=-1)
+        
+        # Static road polyline embedding
         static_rg_embedding = self.static_rg_pointnet(static_road).unsqueeze(
             dim=-2
         ).repeat(1, 1, self.num_past_timesteps, 1)
 
         # Positional encoding
         agent_embeddings = self.context_positional_encoding(agent_embeddings)
-        dynamic_rg_embedding = self.context_positional_encoding(
-            dynamic_rg_embedding)
-        static_rg_embedding = self.context_positional_encoding(
-            static_rg_embedding)
+        dynamic_rg_embedding = self.context_positional_encoding(dynamic_rg_embedding)
+        static_rg_embedding = self.context_positional_encoding(static_rg_embedding)
 
         # Transformer encoder
         context_encoded_agents = self.transformer_encoder(
@@ -164,20 +189,24 @@ class Transformer_NN(nn.Module):
 # Example usage
 test_usage = False
 if test_usage:
-    num_agent_features = 10
+    num_agent_continuous_features = 8
+    num_agent_categorical_features = 1
     num_static_road_features = 4
-    num_dynamic_road_features = 4
+    num_dynamic_road_continuous_features = 2
+    num_dynamic_road_categorical_features = 1
     num_past_timesteps = 11
     num_model_features = 256
+    categorical_embedding_dim = 16
     num_future_timesteps = 80
     num_future_features = 4
     num_future_trajectories = 3
 
-    model = Transformer_NN(num_agent_features=num_agent_features,
+    model = Transformer_NN(num_agent_features=num_agent_continuous_features,
                            num_static_road_features=num_static_road_features,
-                           num_dynamic_road_features=num_dynamic_road_features,
+                           num_dynamic_road_features=num_dynamic_road_continuous_features,
                            num_past_timesteps=num_past_timesteps,
                            num_model_features=num_model_features,
+                           categorical_embedding_dim=categorical_embedding_dim,
                            num_future_trajectories=num_future_trajectories,
                            num_future_timesteps=num_future_timesteps,
                            num_future_features=num_future_features)
@@ -187,21 +216,31 @@ if test_usage:
     num_static_rg = 500
     num_static_points_per_polyline = 20
     num_dynamic_rg = 7
-    agents = torch.randn(batch_size, num_agents,
-                         num_past_timesteps, num_agent_features)
+    
+    # Separate continuous and categorical features
+    agents_continuous = torch.randn(batch_size, num_agents,
+                                    num_past_timesteps, num_agent_continuous_features)
+    agents_categorical = torch.randint(0, 5, (batch_size, num_agents, num_past_timesteps))  # 5 agent types
     agents_valid = torch.ones(batch_size, num_agents, num_past_timesteps)
+    
     static_road = torch.randn(batch_size, num_static_rg,
                               num_static_points_per_polyline, num_static_road_features)
     static_road_valid = torch.ones(
         batch_size, num_static_rg, num_static_points_per_polyline)
-    dynamic_road = torch.randn(batch_size, num_dynamic_rg,
-                               num_past_timesteps, num_dynamic_road_features)
+    
+    dynamic_road_continuous = torch.randn(batch_size, num_dynamic_rg,
+                                          num_past_timesteps, num_dynamic_road_continuous_features)
+    dynamic_road_categorical = torch.randint(0, 9, (batch_size, num_dynamic_rg, num_past_timesteps))  # 9 traffic light states
     dynamic_road_valid = torch.ones(
         batch_size, num_dynamic_rg, num_past_timesteps)
+    
     future_agents = torch.randn(batch_size, num_agents,
                                 num_future_timesteps, num_future_features)
     future_agents_valid = torch.ones(
         batch_size, num_agents, num_future_timesteps)
 
-    output = model(agents, agents_valid, static_road, static_road_valid,
-                   dynamic_road, dynamic_road_valid, future_agents, future_agents_valid)
+    output = model(agents_continuous, agents_categorical, agents_valid, 
+                   static_road, static_road_valid,
+                   dynamic_road_continuous, dynamic_road_categorical, dynamic_road_valid, 
+                   future_agents, future_agents_valid)
+    print("Successful forward pass through Transformer_NN model.")

@@ -326,55 +326,63 @@ def arrange_static_roadgraph_polyline_model_input(torch_dataset_element):
 def arrange_dynamic_roadgraph_model_input(torch_dataset_element):
     """
     Arrange the model input for the dynamic roadgraph model.
+    
+    Returns continuous features and categorical features separately.
 
     Args:
-        torch_dataset_element (dict): A PyTorch dataset element, containing
-        the roadgraph and other data.
+        torch_dataset_element (dict): A PyTorch dataset element.
 
     Returns:
-        tuple: A tuple containing the dynamic roadgraph model input and the
-        valid flag for each map sample.
+        tuple: (continuous_features, categorical_features, valid_mask)
+            - continuous_features: [num_tl, num_timesteps, 2] (x, y positions)
+            - categorical_features: [num_tl, num_timesteps] (traffic light state as int)
+            - valid_mask: [num_tl, num_timesteps]
     """
-    # [num_tl_states, num_past_states + num_current_states]
     traffic_light_input_states_valid = torch.cat(
         (torch_dataset_element['traffic_light_state/past/valid'].swapaxes(0, 1),
-            torch_dataset_element['traffic_light_state/current/valid'].swapaxes(0, 1)), dim=-1
+         torch_dataset_element['traffic_light_state/current/valid'].swapaxes(0, 1)), dim=-1
     )
     traffic_light_input_states_x = torch.cat(
         (torch_dataset_element['traffic_light_state/past/x'].swapaxes(0, 1),
-            torch_dataset_element['traffic_light_state/current/x'].swapaxes(0, 1)), dim=-1
+         torch_dataset_element['traffic_light_state/current/x'].swapaxes(0, 1)), dim=-1
     ) * traffic_light_input_states_valid
     traffic_light_input_states_y = torch.cat(
         (torch_dataset_element['traffic_light_state/past/y'].swapaxes(0, 1),
-            torch_dataset_element['traffic_light_state/current/y'].swapaxes(0, 1)), dim=-1
+         torch_dataset_element['traffic_light_state/current/y'].swapaxes(0, 1)), dim=-1
     ) * traffic_light_input_states_valid
     traffic_light_input_states_state = torch.cat(
         (torch_dataset_element['traffic_light_state/past/state'].swapaxes(0, 1),
-            torch_dataset_element['traffic_light_state/current/state'].swapaxes(0, 1)), dim=-1
-    ) * traffic_light_input_states_valid
-    # [num_tl_states, num_past_states + num_current_states, 3]
-    dynamic_roadgraph_input = torch.cat(
+         torch_dataset_element['traffic_light_state/current/state'].swapaxes(0, 1)), dim=-1
+    ).long()  # Keep as integers for embedding
+    
+    # Continuous features: [num_tl, num_timesteps, 2]
+    dynamic_roadgraph_continuous = torch.cat(
         (traffic_light_input_states_x.unsqueeze(dim=-1),
-         traffic_light_input_states_y.unsqueeze(dim=-1),
-         traffic_light_input_states_state.unsqueeze(dim=-1)), dim=-1
+         traffic_light_input_states_y.unsqueeze(dim=-1)), dim=-1
     )
+    
+    # Categorical features: [num_tl, num_timesteps]
+    dynamic_roadgraph_categorical = torch.where(traffic_light_input_states_state < 0, torch.zeros_like(traffic_light_input_states_state), traffic_light_input_states_state)
 
-    return dynamic_roadgraph_input, traffic_light_input_states_valid
+    return dynamic_roadgraph_continuous, dynamic_roadgraph_categorical, traffic_light_input_states_valid
 
 
 def arrange_agent_model_input(torch_dataset_element):
     """
     Arrange the model input for the agent model.
+    
+    Returns continuous features and categorical features separately.
 
     Args:
-        torch_dataset_element (dict): A PyTorch dataset element, containing
-        the agent and other data.
+        torch_dataset_element (dict): A PyTorch dataset element.
 
     Returns:
-        tuple: A tuple containing the agent model input and the
-        valid flag for each agent.
+        tuple: (continuous_features, categorical_features, valid_mask)
+            - continuous_features: [num_agents, num_timesteps, 8]
+              (x, y, bbox_yaw, velocity_x, velocity_y, vel_yaw, length, width)
+            - categorical_features: [num_agents, num_timesteps] (agent type as int)
+            - valid_mask: [num_agents, num_timesteps]
     """
-    # [num_agents, num_past_states + num_current_states, 1]
     agent_input_states_valid = torch.cat(
         (torch_dataset_element['state/past/valid'],
          torch_dataset_element['state/current/valid']), dim=-1
@@ -411,24 +419,29 @@ def arrange_agent_model_input(torch_dataset_element):
         (torch_dataset_element['state/past/width'],
          torch_dataset_element['state/current/width']), dim=-1
     ) * agent_input_states_valid
-    agent_input_states_type = (torch_dataset_element['state/type'].unsqueeze(dim=-1)).expand_as(
+    
+    # Agent type: keep as integer indices, expand to match valid shape
+    agent_input_states_type = torch_dataset_element['state/type'].unsqueeze(dim=-1).expand_as(
         agent_input_states_valid
-    ) * agent_input_states_valid
+    ).long().squeeze(dim=-1)  # Shape: [num_agents, num_timesteps]
+    agent_input_states_type = torch.where(agent_input_states_type < 0, torch.zeros_like(agent_input_states_type), agent_input_states_type)
 
-    # [num_agents, num_past_states + num_current_states, 8]
-    agent_input = torch.cat(
+    # Continuous features: [num_agents, num_timesteps, 8]
+    agent_input_continuous = torch.cat(
         (agent_input_states_x.unsqueeze(dim=-1),
          agent_input_states_y.unsqueeze(dim=-1),
          agent_input_states_bbox_yaw.unsqueeze(dim=-1),
-         agent_input_states_velocity_x.unsqueeze(
-            dim=-1), agent_input_states_velocity_y.unsqueeze(dim=-1),
+         agent_input_states_velocity_x.unsqueeze(dim=-1),
+         agent_input_states_velocity_y.unsqueeze(dim=-1),
          agent_input_states_vel_yaw.unsqueeze(dim=-1),
-         agent_input_states_length.unsqueeze(
-            dim=-1), agent_input_states_width.unsqueeze(dim=-1),
-         agent_input_states_type.unsqueeze(dim=-1)), dim=-1
+         agent_input_states_length.unsqueeze(dim=-1),
+         agent_input_states_width.unsqueeze(dim=-1)), dim=-1
     )
+    
+    # Categorical features: [num_agents, num_timesteps]
+    agent_input_categorical = agent_input_states_type
 
-    return agent_input, agent_input_states_valid
+    return agent_input_continuous, agent_input_categorical, agent_input_states_valid
 
 
 def arrange_agent_model_target(torch_dataset_element):

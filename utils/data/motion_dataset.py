@@ -155,11 +155,11 @@ class TransformerMotionDataset(Dataset):
         # Static roadgraph
         static_roadgraph_polyline_input, static_roadgraph_polyline_valid = arrange_static_roadgraph_polyline_model_input(
             torch_element)
-        # Dynamic roadgraph
-        dynamic_roadgraph_input, dynamic_roadgraph_valid = arrange_dynamic_roadgraph_model_input(
+        # Dynamic roadgraph (separate continuous and categorical)
+        dynamic_roadgraph_cont, dynamic_roadgraph_cat, dynamic_roadgraph_valid = arrange_dynamic_roadgraph_model_input(
             torch_element)
-        # Agent states
-        agent_input, agent_input_valid = arrange_agent_model_input(
+        # Agent states (separate continuous and categorical)
+        agent_input_cont, agent_input_cat, agent_input_valid = arrange_agent_model_input(
             torch_element)
         # Agent targets
         agent_target, agent_target_valid = arrange_agent_model_target(
@@ -170,9 +170,11 @@ class TransformerMotionDataset(Dataset):
         return {
             'static_roadgraph_polyline_input': static_roadgraph_polyline_input,
             'static_roadgraph_polyline_valid': static_roadgraph_polyline_valid,
-            'dynamic_roadgraph_input': dynamic_roadgraph_input,
+            'dynamic_roadgraph_continuous': dynamic_roadgraph_cont,
+            'dynamic_roadgraph_categorical': dynamic_roadgraph_cat,
             'dynamic_roadgraph_valid': dynamic_roadgraph_valid,
-            'agent_input': agent_input,
+            'agent_input_continuous': agent_input_cont,
+            'agent_input_categorical': agent_input_cat,
             'agent_input_valid': agent_input_valid,
             'agent_target': agent_target,
             'agent_target_valid': agent_target_valid,
