@@ -439,29 +439,49 @@ def visualize_model_inputs_and_output(model_input, model_output,
         plt.plot(agent_output_x, agent_output_y,
                  's:', color=color, markersize=3, linewidth=1.5, alpha=0.7)
 
-    ################ Static road points ################
+    ################ Static road polylines ################
 
-    # Static road samples
-    # [batch_size, num_points, 1]
-    roadsamples_valid = model_input['static_roadgraph_valid'][index_in_batch, :, 0].bool()
-    # [batch_size, num_points, 2]
+    # Static road polylines
+    # [batch_size, num_polylines, max_polyline_length, num_features(x,y,z,type)]
     static_roadgraph = model_input['static_roadgraph_input'][index_in_batch, ...]
-    static_roadgraph = static_roadgraph[roadsamples_valid]
-    static_roadgraph_x = static_roadgraph[:, 0].detach().cpu().numpy()
-    static_roadgraph_y = static_roadgraph[:, 1].detach().cpu().numpy()
-
-    # Plot static road points
-    plt.plot(static_roadgraph_x, static_roadgraph_y,
-             'k.', markersize=0.5, label='Road Points', alpha=0.5)
+    static_roadgraph_valid = model_input['static_roadgraph_valid'][index_in_batch, :, :].bool()
+    
+    # Plot each polyline separately
+    num_polylines = static_roadgraph.shape[0]
+    for polyline_idx in range(num_polylines):
+        polyline = static_roadgraph[polyline_idx, ...]
+        polyline_valid = static_roadgraph_valid[polyline_idx, :]
+        
+        if polyline_valid.any():  # Only plot if there are valid points
+            # Get valid points from this polyline [x, y, z, type]
+            valid_points = polyline[polyline_valid]
+            
+            if len(valid_points) > 0:
+                x_coords = valid_points[:, 0].detach().cpu().numpy()
+                y_coords = valid_points[:, 1].detach().cpu().numpy()
+                # Plot polyline as a continuous line
+                plt.plot(x_coords, y_coords, 'k-', linewidth=0.8, alpha=0.4)
 
     # Beautify
 
     # Set limits with safety checks
-    if len(static_roadgraph_x) > 0:
-        road_x_min = np.min(static_roadgraph_x)
-        road_x_max = np.max(static_roadgraph_x)
-        road_y_min = np.min(static_roadgraph_y)
-        road_y_max = np.max(static_roadgraph_y)
+    static_roadgraph = model_input['static_roadgraph_input'][index_in_batch, ...]
+    static_roadgraph_valid = model_input['static_roadgraph_valid'][index_in_batch, :, :].bool()
+    
+    # Flatten all valid road points to get the extent
+    all_valid_points = []
+    for polyline_idx in range(static_roadgraph.shape[0]):
+        polyline_valid = static_roadgraph_valid[polyline_idx, :]
+        if polyline_valid.any():
+            valid_points = static_roadgraph[polyline_idx, polyline_valid, :2]
+            all_valid_points.append(valid_points.detach().cpu().numpy())
+    
+    if all_valid_points:
+        all_valid_points = np.concatenate(all_valid_points, axis=0)
+        road_x_min = np.min(all_valid_points[:, 0])
+        road_x_max = np.max(all_valid_points[:, 0])
+        road_y_min = np.min(all_valid_points[:, 1])
+        road_y_max = np.max(all_valid_points[:, 1])
         
         # Add some padding to the limits
         x_padding = (road_x_max - road_x_min) * 0.1 if road_x_max > road_x_min else 10
@@ -478,12 +498,12 @@ def visualize_model_inputs_and_output(model_input, model_output,
     # Create custom legend with line styles only (not per agent)
     from matplotlib.lines import Line2D
     legend_elements = [
-        Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=6, label='Input Trajectory', linestyle='-'),
-        Line2D([0], [0], marker='x', color='w', markerfacecolor='gray', markersize=8, label='Target Trajectory', linestyle='--'),
-        Line2D([0], [0], marker='s', color='w', markerfacecolor='gray', markersize=5, label='Model Output', linestyle=':'),
-        Line2D([0], [0], marker='.', color='k', markerfacecolor='k', markersize=4, label='Road Points', linestyle='none'),
+        Line2D([0], [0], marker='o', color='gray', markerfacecolor='gray', markersize=6, label='Input Trajectory', linestyle='-', linewidth=2),
+        Line2D([0], [0], marker='x', color='gray', markerfacecolor='gray', markersize=8, label='Target Trajectory', linestyle='--', linewidth=2),
+        Line2D([0], [0], marker='s', color='gray', markerfacecolor='gray', markersize=5, label='Model Output', linestyle=':', linewidth=2),
+        Line2D([0], [0], color='k', linewidth=1.5, label='Road Polylines', alpha=0.6),
     ]
-    plt.legend(handles=legend_elements, loc='upper right', fontsize=9, framealpha=0.95)
+    plt.legend(handles=legend_elements, loc='upper right', fontsize=10, framealpha=0.95, edgecolor='black')
     
     plt.axis('equal')  # Ensure equal scaling for x and y axes
     plt.grid(True, alpha=0.3)

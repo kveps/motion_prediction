@@ -32,7 +32,7 @@ parser.add_argument('--colab', action='store_true',
                     help='Use Google Colab mode with GCS paths (requires authentication)')
 parser.add_argument('--model-path', type=str, default=None,
                     help='Path to model weights for visualization (optional)')
-parser.add_argument('--num-samples', type=int, default=5,
+parser.add_argument('--num-samples', type=int, default=1,
                     help='Number of samples to visualize (default: 5)')
 parser.add_argument('--batch-size', type=int, default=1,
                     help='Batch size for visualization (default: 1)')
@@ -69,7 +69,7 @@ print(f"Loading {args.data_split} dataset from: {data_path}")
 
 # Create the dataset and dataloader
 dataset = TransformerMotionDataset(data_path)
-dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
+dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
 print(f"Total samples available: {len(dataset)}")
 print(f"Visualizing first {min(args.num_samples, len(dataset))} samples")
@@ -178,7 +178,7 @@ with torch.no_grad():
             'agent_trajs': trajectories,
             'agent_probs': probs,
         }
-
+        print("Static road size: ", static_road.size())
         # Prepare model input dictionary in the format expected by visualization function
         model_input = {
             'agent_input': agents_cont,
