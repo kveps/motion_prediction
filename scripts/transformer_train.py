@@ -32,12 +32,10 @@ parser.add_argument('--model-path', type=str, default=None,
                     help='Path to model weights for testing')
 parser.add_argument('--epochs', type=int, default=100,
                     help='Number of training epochs (default: 100)')
-parser.add_argument('--batch-size', type=int, default=2,
-                    help='Batch size for training/validation (default: 2)')
+parser.add_argument('--batch-size', type=int, default=5,
+                    help='Batch size for training/validation (default: 5)')
 parser.add_argument('--lr', type=float, default=0.01,
                     help='Learning rate (default: 0.01)')
-parser.add_argument('--debug', action='store_true',
-                    help='Run with only 2 batches for debugging')
 args = parser.parse_args()
 
 # Determine the device to use
@@ -99,7 +97,7 @@ num_dynamic_roadgraph_continuous_features = dynamic_roadgraph_continuous.size(di
 num_past_timesteps = agent_input_continuous.size(dim=-2)
 num_future_features = agent_target.size(dim=-1)
 num_future_timesteps = agent_target.size(dim=-2)
-num_future_trajectories = 1
+num_future_trajectories = 3
 num_model_features = 256
 categorical_embedding_dim = 16
 
@@ -136,10 +134,6 @@ if not args.test:
         print(f"{'='*50}")
         
         for batch_idx, dataset_element in enumerate(training_dataloader):
-            # Debug mode: only run 2 batches
-            if args.debug and batch_idx >= 2:
-                break
-                
             # Fetch separated continuous and categorical features
             agents_cont = dataset_element['agent_input_continuous'].to(device)
             agents_cat = dataset_element['agent_input_categorical'].to(device)
@@ -156,9 +150,9 @@ if not args.test:
             # Initialize future agents
             batch_size, num_agents, _, _ = agents_cont.size()
             future_agents = torch.randn(
-                (batch_size, num_agents, num_future_timesteps, num_future_features),
+                (batch_size, num_agents, num_future_trajectories, num_model_features),
                 dtype=torch.float32, device=device)
-            future_agents_valid = torch.ones([batch_size, num_agents, num_future_timesteps], dtype=torch.float32, device=device)                
+            future_agents_valid = torch.ones([batch_size, num_agents, num_future_trajectories], dtype=torch.float32, device=device)                
 
             optimizer.zero_grad()
             trajectories, probs = model(
@@ -175,7 +169,7 @@ if not args.test:
             if (batch_idx + 1) % 10 == 0:
                 print(f"Batch [{batch_idx+1}/{len(training_dataloader)}], Loss: {loss.item():.4f}")
 
-        avg_train_loss = train_loss / max(1, batch_idx + 1)  # Fixed denominator for debug mode
+        avg_train_loss = train_loss / len(training_dataloader)
 
         # Validation
         model.eval()  # Set model to evaluation mode
@@ -198,9 +192,9 @@ if not args.test:
                 # Initialize future agents
                 batch_size, num_agents, _, _ = agents_cont.size()
                 future_agents = torch.randn(
-                    (batch_size, num_agents, num_future_timesteps, num_future_features),
+                    (batch_size, num_agents, num_future_trajectories, num_model_features),
                     dtype=torch.float32, device=device)
-                future_agents_valid = torch.ones([batch_size, num_agents, num_future_timesteps], dtype=torch.float32, device=device)
+                future_agents_valid = torch.ones([batch_size, num_agents, num_future_trajectories], dtype=torch.float32, device=device)
 
                 trajectories, probs = model(
                     agents_cont, agents_cat, agents_valid,
@@ -254,9 +248,9 @@ else:
             # Initialize future agents
             batch_size, num_agents, _, _ = agents_cont.size()
             future_agents = torch.randn(
-                (batch_size, num_agents, num_future_timesteps, num_future_features),
+                (batch_size, num_agents,  num_future_trajectories, num_model_features),
                 dtype=torch.float32, device=device)
-            future_agents_valid = torch.ones([batch_size, num_agents, num_future_timesteps], dtype=torch.float32, device=device)
+            future_agents_valid = torch.ones([batch_size, num_agents, num_future_trajectories], dtype=torch.float32, device=device)
 
             trajectories, probs = model(
                 agents_cont, agents_cat, agents_valid,

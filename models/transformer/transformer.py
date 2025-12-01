@@ -50,37 +50,25 @@ class Transformer_NN(nn.Module):
             num_timesteps=num_past_timesteps,
         )
 
-        # Point encoding for future agents (single point encoding, no aggregation)
-        self.future_agent_point_encoder = PointEncoder(
-            num_features_per_point=num_future_features,
-            d_model=self.d_model)
-
-        # Positional embedding for future
-        self.future_positional_encoding = PositionalEncoder(
-            d_model=self.d_model,
-            num_timesteps=self.num_future_timesteps,
-        )
-
         # Transformer encoder
         self.transformer_encoder = ContextEncoder(
             num_layers=2, d_model=num_model_features, ffn_hidden=2048, num_heads=4, drop_prob=0.1,
         )
 
-        # Transformer decoders (for each future trajectory)
-        self.transformer_decoders = nn.ModuleList([PredictionDecoder(
+        # Transformer decoder
+        self.transformer_decoder = PredictionDecoder(
             num_layers=2, d_model=num_model_features, ffn_hidden=2048, num_heads=4, drop_prob=0.1,
-        ) for _ in range(num_future_trajectories)])
+        )
 
-        # Trajectory Prediction
-        self.trajectory_predictions = nn.ModuleList([nn.Linear(
-            num_model_features, num_future_features) for _ in range(num_future_trajectories)])
-
-        # Trajectory probabilities
-        self.trajectory_confidences = nn.ModuleList([
-            nn.Linear(num_model_features*num_future_timesteps, 1)
-            for _ in range(num_future_trajectories)
-        ])
-        self.sigmoid = nn.Sigmoid()
+        # Trajectory Head
+        self.traj_head = nn.Sequential(
+            nn.Linear(num_model_features, 256),
+            nn.ReLU(),
+            nn.Linear(256, num_future_timesteps * num_future_features) # Output: x, y, yaw per step
+        )
+        
+        # Probability Head
+        self.prob_head = nn.Linear(num_model_features, 1)
 
     def forward(self, agents_continuous, agents_categorical, agents_valid, 
                 static_road, static_road_valid, 
@@ -137,51 +125,29 @@ class Transformer_NN(nn.Module):
             dynamic_road_valid
         )
 
-        # Point encoding for future agents (no sequence aggregation needed)
-        future_agent_embeddings = torch.zeros(
-            (future_agents.size(0), future_agents.size(
-                1), future_agents.size(2), self.d_model),
-            device=future_agents.device, dtype=future_agents.dtype
-        )
-        for t in range(self.num_future_timesteps):
-            future_agents_at_t = future_agents[..., t, :]  # [batch_size, num_agents, num_features]
-            future_agent_embeddings[..., t, :] = self.future_agent_point_encoder(future_agents_at_t)
-
-        # Positional encoding
-        future_agent_embeddings = self.future_positional_encoding(
-            future_agent_embeddings
-        )
-
         # Transformer decoder
-        future_trajectories = torch.zeros_like(future_agents).unsqueeze(dim=-3).expand(
-            -1, -1, self.num_future_trajectories, -1, -1
-        )
-        confidence_scores = torch.zeros(
-            (future_agents.size(0), future_agents.size(1),
-             self.num_future_trajectories, 1),
-            device=future_agents.device, dtype=future_agents.dtype
+        decoded_agents = self.transformer_decoder(
+            context_encoded_agents,
+            agents_valid,
+            future_agents,
+            future_agents_valid,
         )
 
-        for i in range(self.num_future_trajectories):
-            decoder_outputs = self.transformer_decoders[i](
-                context_encoded_agents,
-                agents_valid,
-                # TODO: Initialize each decoder with a separate future agent embedding
-                future_agent_embeddings,
-                future_agents_valid,
-            )
-            # Trajectory prediction
-            future_trajectories[..., i, :, :] = self.trajectory_predictions[i](
-                decoder_outputs)
-            # Trajectory confidence
-            decoder_outputs = decoder_outputs.view(
-                decoder_outputs.size(0), decoder_outputs.size(1),
-                self.num_future_timesteps*self.d_model)
-            confidence_scores[..., i, :] = self.sigmoid(
-                self.trajectory_confidences[i](decoder_outputs))
-
-        # Softmax on confidence scores for trajectory probabilities
-        probs = torch.softmax(confidence_scores, dim=-1).squeeze(dim=-1)
+        # Prediction heads
+        #
+        # Trajectory head
+        future_trajectories = self.traj_head(decoded_agents)
+        future_trajectories = future_trajectories.view(
+            decoded_agents.size(0), decoded_agents.size(1),
+            self.num_future_trajectories, self.num_future_timesteps, self.num_future_features
+        )
+        # Probability head
+        probs = self.prob_head(decoded_agents)
+        probs = probs.view(
+            decoded_agents.size(0), decoded_agents.size(1),
+            self.num_future_trajectories   
+        )
+        probs = torch.softmax(probs, dim=-1)
 
         return future_trajectories, probs
 
@@ -234,10 +200,9 @@ if test_usage:
     dynamic_road_valid = torch.ones(
         batch_size, num_dynamic_rg, num_past_timesteps)
     
-    future_agents = torch.randn(batch_size, num_agents,
-                                num_future_timesteps, num_future_features)
+    future_agents = torch.randn(batch_size, num_agents, num_future_trajectories, num_model_features)
     future_agents_valid = torch.ones(
-        batch_size, num_agents, num_future_timesteps)
+        batch_size, num_agents, num_future_trajectories)
 
     output = model(agents_continuous, agents_categorical, agents_valid, 
                    static_road, static_road_valid,
