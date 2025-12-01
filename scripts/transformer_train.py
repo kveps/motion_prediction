@@ -97,7 +97,7 @@ num_dynamic_roadgraph_continuous_features = dynamic_roadgraph_continuous.size(di
 num_past_timesteps = agent_input_continuous.size(dim=-2)
 num_future_features = agent_target.size(dim=-1)
 num_future_timesteps = agent_target.size(dim=-2)
-num_future_trajectories = 3
+num_future_trajectories = 1
 num_model_features = 256
 categorical_embedding_dim = 16
 

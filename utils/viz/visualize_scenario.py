@@ -368,13 +368,14 @@ def visualize_scenario_image(scenario_tensor):
 
 
 def visualize_model_inputs_and_output(model_input, model_output,
-                                      index_in_batch=0):
+                                      index_in_batch=0, save_path=None):
     """ Visualize model input and output as a single image
 
     Args:
         model_input (dict): A dictionary containing the model input.
         model_output (dict): A dictionary containing the model output.
         index_in_batch (int): The index of the batch to visualize
+        save_path (str): Optional path to save the plot. If None, displays the plot.
     """
     ############### Agents input ################
 
@@ -385,81 +386,116 @@ def visualize_model_inputs_and_output(model_input, model_output,
         index_in_batch, ...]
 
     # Past and current agent states
-    # [num_agents, num_timesteps, 1] float32.
-    agent_input_valid = model_input['agent_input_valid'].bool()
+    # [batch_size, num_agents, num_timesteps, 2] float32.
     agent_input = model_input['agent_input'][index_in_batch, ...]
     agent_input = agent_input[tracks_to_predict]
-    agent_input_x = agent_input[:, :, 0]
-    agent_input_y = agent_input[:, :, 1]
+    agent_input_x = agent_input[:, :, 0].detach().cpu().numpy()
+    agent_input_y = agent_input[:, :, 1].detach().cpu().numpy()
 
     # Target agent states
-    # [num_agents, num_timesteps, 1] float32.
-    agent_target_valid = model_input['agent_target_valid'][index_in_batch, :, :].bool(
-    )
+    # [batch_size, num_agents, num_timesteps, 2] float32.
     agent_target = model_input['agent_target'][index_in_batch, ...]
     agent_target = agent_target[tracks_to_predict]
-    agent_target_x = agent_target[:, :, 0]
-    agent_target_y = agent_target[:, :, 1]
+    agent_target_x = agent_target[:, :, 0].detach().cpu().numpy()
+    agent_target_y = agent_target[:, :, 1].detach().cpu().numpy()
 
-    # Plot agent input and target points
-    plt.plot(agent_input_x, agent_input_y,
-             'r.', markersize=3, label='Agent Points')
-    plt.plot(agent_target_x, agent_target_y,
-             'g.', markersize=3, label='Future Agent Points')
+    # Get colormap for agents
+    num_agents_to_predict = agent_input.shape[0]
+    colors = cm.get_cmap('tab20', max(num_agents_to_predict, 2))
+    
+    # Plot agent input and target points per agent with different colors
+    for agent_idx in range(num_agents_to_predict):
+        color = colors(agent_idx)
+        # Plot input as solid line with circles
+        plt.plot(agent_input_x[agent_idx], agent_input_y[agent_idx],
+                 'o-', color=color, markersize=4, linewidth=1.5, alpha=0.7)
+        # Plot target as dashed line with X markers
+        plt.plot(agent_target_x[agent_idx], agent_target_y[agent_idx],
+                 'x--', color=color, markersize=5, linewidth=1.5, alpha=0.7)
 
     ############### Agents output ################
 
-    # Model ouput agent states
-    # [num_agents, num_future_trajectories, num_timesteps, 3] float32.
+    # Model output agent states
+    # [batch_size, num_agents, num_future_trajectories, num_timesteps, 2] float32.
     agent_trajs = model_output['agent_trajs'][index_in_batch, ...]
     agent_trajs = agent_trajs[tracks_to_predict]
-    # [num_agents, num_future_trajectories] float32.
+    # [batch_size, num_agents, num_future_trajectories] float32.
     agent_probs = model_output['agent_probs'][index_in_batch, ...]
     agent_probs = agent_probs[tracks_to_predict]
-    # [num_agents].
+    # [num_agents] - get the trajectory index with highest probability
     agent_highest_prob_traj = torch.argmax(agent_probs, dim=-1)
 
-    # [num_agents, num_timesteps, 1] float32.
-    # TODO: Correctly use the highest prob trajectory instead of index zero below
-    agent_output_x = agent_trajs[:, 0, :, 0]
-    agent_output_y = agent_trajs[:, 0, :, 1]
-
-    # Plot agent output points
-    plt.plot(agent_output_x, agent_output_y,
-             'b.', markersize=3, label='Model output points of the highest prob trajectory')
+    # Extract and plot the highest probability trajectory for each agent
+    # [num_agents, num_timesteps, 2]
+    num_agents = agent_trajs.shape[0]
+    for agent_idx in range(num_agents):
+        traj_idx = agent_highest_prob_traj[agent_idx].item()
+        agent_output_traj = agent_trajs[agent_idx, traj_idx, :, :2]
+        agent_output_x = agent_output_traj[:, 0].detach().cpu().numpy()
+        agent_output_y = agent_output_traj[:, 1].detach().cpu().numpy()
+        
+        color = colors(agent_idx)
+        # Plot model output as dotted line with square markers
+        plt.plot(agent_output_x, agent_output_y,
+                 's:', color=color, markersize=3, linewidth=1.5, alpha=0.7)
 
     ################ Static road points ################
 
     # Static road samples
-    roadsamples_valid = model_input['static_roadgraph_valid'][index_in_batch, :, 0].bool(
-    )
-    static_roadgraph_x = model_input['static_roadgraph_input'][index_in_batch,
-                                                               :, 0][roadsamples_valid]
-    static_roadgraph_y = model_input['static_roadgraph_input'][index_in_batch,
-                                                               :, 1][roadsamples_valid]
+    # [batch_size, num_points, 1]
+    roadsamples_valid = model_input['static_roadgraph_valid'][index_in_batch, :, 0].bool()
+    # [batch_size, num_points, 2]
+    static_roadgraph = model_input['static_roadgraph_input'][index_in_batch, ...]
+    static_roadgraph = static_roadgraph[roadsamples_valid]
+    static_roadgraph_x = static_roadgraph[:, 0].detach().cpu().numpy()
+    static_roadgraph_y = static_roadgraph[:, 1].detach().cpu().numpy()
 
     # Plot static road points
     plt.plot(static_roadgraph_x, static_roadgraph_y,
-             'k.', markersize=0.5, label='Road Points')
-
-    # TODO: Add dynamic roadgraph (traffic light) points
+             'k.', markersize=0.5, label='Road Points', alpha=0.5)
 
     # Beautify
 
-    # Set limits
-    road_x_min = min(static_roadgraph_x)
-    road_x_max = max(static_roadgraph_x)
-    road_y_min = min(static_roadgraph_y)
-    road_y_max = max(static_roadgraph_y)
-    plt.xlim(road_x_min, road_x_max)
-    plt.ylim(road_y_min, road_y_max)
+    # Set limits with safety checks
+    if len(static_roadgraph_x) > 0:
+        road_x_min = np.min(static_roadgraph_x)
+        road_x_max = np.max(static_roadgraph_x)
+        road_y_min = np.min(static_roadgraph_y)
+        road_y_max = np.max(static_roadgraph_y)
+        
+        # Add some padding to the limits
+        x_padding = (road_x_max - road_x_min) * 0.1 if road_x_max > road_x_min else 10
+        y_padding = (road_y_max - road_y_min) * 0.1 if road_y_max > road_y_min else 10
+        
+        plt.xlim(road_x_min - x_padding, road_x_max + x_padding)
+        plt.ylim(road_y_min - y_padding, road_y_max + y_padding)
 
     # Set plot
-    plt.xlabel('X')
-    plt.ylabel('Y')
-    plt.title('Road and Actor Visualization')
+    plt.xlabel('X (m)', fontsize=11)
+    plt.ylabel('Y (m)', fontsize=11)
+    plt.title('Transformer Model: Input and Output Visualization', fontsize=12, fontweight='bold')
+    
+    # Create custom legend with line styles only (not per agent)
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=6, label='Input Trajectory', linestyle='-'),
+        Line2D([0], [0], marker='x', color='w', markerfacecolor='gray', markersize=8, label='Target Trajectory', linestyle='--'),
+        Line2D([0], [0], marker='s', color='w', markerfacecolor='gray', markersize=5, label='Model Output', linestyle=':'),
+        Line2D([0], [0], marker='.', color='k', markerfacecolor='k', markersize=4, label='Road Points', linestyle='none'),
+    ]
+    plt.legend(handles=legend_elements, loc='upper right', fontsize=9, framealpha=0.95)
+    
     plt.axis('equal')  # Ensure equal scaling for x and y axes
-    plt.show()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    # Save or show
+    if save_path:
+        plt.savefig(save_path, dpi=100, bbox_inches='tight')
+        print(f"Plot saved to: {save_path}")
+        plt.close()
+    else:
+        plt.show()
 
 
 def visualize_polylines(polylines, validity):
