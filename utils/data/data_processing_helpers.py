@@ -24,89 +24,6 @@ def get_data_file_names(dir_path):
         return f"Not a directory: {dir_path}"
 
 
-def translate_parsed_dataset_to_av_center(tf_dataset):
-    """
-    Translates all spatial features in the dataset such that the autonomous vehicle (AV)
-    is centered at the origin.
-
-    This function adjusts the positions of agents, roadgraph, and traffic light states
-    relative to the AV's last known current position. The resulting transformation ensures
-    that the AV is at the origin (0, 0, 0) in the coordinate system.
-
-    Args:
-        tf_dataset (dict): A dictionary containing TensorFlow tensors of various
-                           features including agent states, roadgraph, and traffic
-                           light states.
-
-    Returns:
-        dict: A new dictionary with the same keys as `tf_dataset`, but with
-              translated spatial features.
-    """
-
-    transformed = {}  # Create a new dictionary
-
-    # Get AV index in the set of agents
-    av_idx = 0
-    for i in range(tf_dataset['state/current/x'].shape[0]):
-        if tf_dataset['state/is_sdc'][i] == 1:
-            av_idx = i
-    assert (av_idx is not None)
-
-    # Set AV center
-    num_current_states = tf_dataset['state/current/x'].shape[1]
-    av_center_x = tf_dataset['state/current/x'][av_idx,
-                                                num_current_states - 1]
-    av_center_y = tf_dataset['state/current/y'][av_idx,
-                                                num_current_states - 1]
-    av_center_z = 0.0
-    av_center_xyz = tf.stack([av_center_x, av_center_y, av_center_z])
-
-    for key, value in tf_dataset.items():
-        if key == 'state/past/x':
-            transformed[key] = tf.subtract(
-                tf_dataset['state/past/x'], av_center_x)
-        elif key == 'state/past/y':
-            transformed[key] = tf.subtract(
-                tf_dataset['state/past/y'], av_center_y)
-        elif key == 'state/current/x':
-            transformed[key] = tf.subtract(
-                tf_dataset['state/current/x'], av_center_x)
-        elif key == 'state/current/y':
-            transformed[key] = tf.subtract(
-                tf_dataset['state/current/y'], av_center_y)
-        elif key == 'state/future/x':
-            transformed[key] = tf.subtract(
-                tf_dataset['state/future/x'], av_center_x)
-        elif key == 'state/future/y':
-            transformed[key] = tf.subtract(
-                tf_dataset['state/future/y'], av_center_y)
-        elif key == 'roadgraph_samples/xyz':
-            transformed['roadgraph_samples/xyz'] = tf.subtract(
-                tf_dataset['roadgraph_samples/xyz'], av_center_xyz)
-        elif key == 'traffic_light_state/current/x':
-            transformed[key] = tf.subtract(
-                tf_dataset['traffic_light_state/current/x'], av_center_x)
-        elif key == 'traffic_light_state/current/y':
-            transformed[key] = tf.subtract(
-                tf_dataset['traffic_light_state/current/y'], av_center_y)
-        elif key == 'traffic_light_state/current/z':
-            transformed[key] = tf.subtract(
-                tf_dataset['traffic_light_state/current/x'], av_center_z)
-        elif key == 'traffic_light_state/past/x':
-            transformed[key] = tf.subtract(
-                tf_dataset['traffic_light_state/past/x'], av_center_x)
-        elif key == 'traffic_light_state/past/y':
-            transformed[key] = tf.subtract(
-                tf_dataset['traffic_light_state/past/y'], av_center_y)
-        elif key == 'traffic_light_state/past/z':
-            transformed[key] = tf.subtract(
-                tf_dataset['traffic_light_state/past/x'], av_center_z)
-        else:
-            transformed[key] = value  # Copy unchanged tensors
-
-    return transformed
-
-
 def transform_parsed_dataset_to_av_frame(tf_dataset):
     """
     Transforms all relevant features to the AV's frame of reference.
@@ -456,12 +373,9 @@ def arrange_agent_model_target(torch_dataset_element):
     """
     # [num_agents, num_future_states, 1]
     agent_target_states_valid = torch_dataset_element['state/future/valid']
-    agent_target_states_x = torch_dataset_element['state/future/x'] * \
-        agent_target_states_valid
-    agent_target_states_y = torch_dataset_element['state/future/y'] * \
-        agent_target_states_valid
-    agent_target_states_bbox_yaw = torch_dataset_element['state/future/bbox_yaw'] * \
-        agent_target_states_valid
+    agent_target_states_x = torch_dataset_element['state/future/x']
+    agent_target_states_y = torch_dataset_element['state/future/y']
+    agent_target_states_bbox_yaw = torch_dataset_element['state/future/bbox_yaw']
     # [num_agents, num_future_states, 3]
     agent_target = torch.cat(
         (agent_target_states_x.unsqueeze(dim=-1), agent_target_states_y.unsqueeze(dim=-1),

@@ -367,8 +367,56 @@ def visualize_scenario_image(scenario_tensor):
     plt.show()
 
 
-def visualize_model_inputs_and_output(model_input, model_output,
-                                      index_in_batch=0, save_path=None):
+def visualize_trajectory_with_validity(x_coords, y_coords, validity_mask, color, 
+                                    linestyle='-', linewidth=0.8, alpha=0.8):
+    """Helper function to plot a trajectory, respecting validity mask.
+    
+    Only plots continuous segments of valid points, skipping invalid points.
+    
+    Args:
+        x_coords: Array of x coordinates.
+        y_coords: Array of y coordinates.
+        validity_mask: Boolean array indicating valid points.
+        color: Color for the line.
+        linestyle: Line style ('-', '--', etc.).
+        linewidth: Width of the line.
+        alpha: Transparency of the line.
+    """
+    validity_mask = validity_mask.astype(bool)
+    
+    # Find continuous segments of valid points
+    valid_indices = np.where(validity_mask)[0]
+    
+    if len(valid_indices) == 0:
+        return
+    
+    # Plot continuous segments
+    start_idx = valid_indices[0]
+    for i in range(1, len(valid_indices)):
+        current_idx = valid_indices[i]
+        prev_idx = valid_indices[i - 1]
+        
+        # If there's a gap (non-consecutive valid indices), plot the segment and start a new one
+        if current_idx != prev_idx + 1:
+            # Plot the segment from start_idx to prev_idx
+            segment_x = x_coords[start_idx:prev_idx + 1]
+            segment_y = y_coords[start_idx:prev_idx + 1]
+            plt.plot(segment_x, segment_y, color=color, linestyle=linestyle, 
+                    linewidth=linewidth, alpha=alpha)
+            start_idx = current_idx
+    
+    # Plot the final segment
+    final_x = x_coords[start_idx:valid_indices[-1] + 1]
+    final_y = y_coords[start_idx:valid_indices[-1] + 1]
+    plt.plot(final_x, final_y, color=color, linestyle=linestyle, 
+            linewidth=linewidth, alpha=alpha)
+
+
+def visualize_model_inputs_and_output(model_input, 
+                                      model_output,
+                                      index_in_batch=0,
+                                      should_visualize_outputs=True, 
+                                      save_path=None):
     """ Visualize model input and output as a single image
 
     Args:
@@ -392,12 +440,18 @@ def visualize_model_inputs_and_output(model_input, model_output,
     agent_input_x = agent_input[:, :, 0].detach().cpu().numpy()
     agent_input_y = agent_input[:, :, 1].detach().cpu().numpy()
 
+    agent_input_valid = model_input['agent_input_valid'][index_in_batch, ...]
+    agent_input_valid = agent_input_valid[tracks_to_predict].detach().cpu().numpy()
+
     # Target agent states
     # [batch_size, num_agents, num_timesteps, 2] float32.
     agent_target = model_input['agent_target'][index_in_batch, ...]
     agent_target = agent_target[tracks_to_predict]
     agent_target_x = agent_target[:, :, 0].detach().cpu().numpy()
     agent_target_y = agent_target[:, :, 1].detach().cpu().numpy()
+
+    agent_target_valid = model_input['agent_target_valid'][index_in_batch, ...]
+    agent_target_valid = agent_target_valid[tracks_to_predict].detach().cpu().numpy()
 
     # Get colormap for agents
     num_agents_to_predict = agent_input.shape[0]
@@ -407,42 +461,48 @@ def visualize_model_inputs_and_output(model_input, model_output,
     for agent_idx in range(num_agents_to_predict):
         color = colors(agent_idx)
         
-        # Combined past + current + future trajectory
+        # Combined past + current + future trajectory with combined validity mask
         combined_x = np.concatenate([agent_input_x[agent_idx], agent_target_x[agent_idx]])
         combined_y = np.concatenate([agent_input_y[agent_idx], agent_target_y[agent_idx]])
+        combined_valid = np.concatenate([agent_input_valid[agent_idx], agent_target_valid[agent_idx]])
         
-        # Plot as a thin solid line
-        plt.plot(combined_x, combined_y, color=color, linewidth=0.8, alpha=0.8)
+        # Plot trajectory respecting validity mask
+        visualize_trajectory_with_validity(combined_x, combined_y, combined_valid, 
+                                      color=color, linestyle='-', linewidth=0.8, alpha=0.8)
         
-        # Mark the current state (last point of input) with a small rectangle
-        current_x = agent_input_x[agent_idx, -1]
-        current_y = agent_input_y[agent_idx, -1]
-        plt.plot(current_x, current_y, 's', color=color, markersize=2, alpha=0.9)
+        # Mark the current state (last valid point of input) with a small rectangle
+        input_valid_indices = np.where(agent_input_valid[agent_idx])[0]
+        if len(input_valid_indices) > 0:
+            last_valid_idx = input_valid_indices[-1]
+            current_x = agent_input_x[agent_idx, last_valid_idx]
+            current_y = agent_input_y[agent_idx, last_valid_idx]
+            plt.plot(current_x, current_y, 's', color=color, markersize=2, alpha=0.9)
 
     ############### Agents output ################
 
-    # Model output agent states
-    # [batch_size, num_agents, num_future_trajectories, num_timesteps, 2] float32.
-    agent_trajs = model_output['agent_trajs'][index_in_batch, ...]
-    agent_trajs = agent_trajs[tracks_to_predict]
-    # [batch_size, num_agents, num_future_trajectories] float32.
-    agent_probs = model_output['agent_probs'][index_in_batch, ...]
-    agent_probs = agent_probs[tracks_to_predict]
-    # [num_agents] - get the trajectory index with highest probability
-    agent_highest_prob_traj = torch.argmax(agent_probs, dim=-1)
+    if should_visualize_outputs:
+        # Model output agent states
+        # [batch_size, num_agents, num_future_trajectories, num_timesteps, 2] float32.
+        agent_trajs = model_output['agent_trajs'][index_in_batch, ...]
+        agent_trajs = agent_trajs[tracks_to_predict]
+        # [batch_size, num_agents, num_future_trajectories] float32.
+        agent_probs = model_output['agent_probs'][index_in_batch, ...]
+        agent_probs = agent_probs[tracks_to_predict]
+        # [num_agents] - get the trajectory index with highest probability
+        agent_highest_prob_traj = torch.argmax(agent_probs, dim=-1)
 
-    # Extract and plot the highest probability trajectory for each agent
-    # [num_agents, num_timesteps, 2]
-    num_agents = agent_trajs.shape[0]
-    for agent_idx in range(num_agents):
-        traj_idx = agent_highest_prob_traj[agent_idx].item()
-        agent_output_traj = agent_trajs[agent_idx, traj_idx, :, :2]
-        agent_output_x = agent_output_traj[:, 0].detach().cpu().numpy()
-        agent_output_y = agent_output_traj[:, 1].detach().cpu().numpy()
-        
-        color = colors(agent_idx)
-        # Plot model output as dashed line (same thickness as road polylines)
-        plt.plot(agent_output_x, agent_output_y, '--', color=color, linewidth=0.8, alpha=0.8)
+        # Extract and plot the highest probability trajectory for each agent
+        # [num_agents, num_timesteps, 2]
+        num_agents = agent_trajs.shape[0]
+        for agent_idx in range(num_agents):
+            traj_idx = agent_highest_prob_traj[agent_idx].item()
+            agent_output_traj = agent_trajs[agent_idx, traj_idx, :, :2]
+            agent_output_x = agent_output_traj[:, 0].detach().cpu().numpy()
+            agent_output_y = agent_output_traj[:, 1].detach().cpu().numpy()
+            
+            color = colors(agent_idx)
+            # Plot model output as dashed line (same thickness as road polylines)
+            plt.plot(agent_output_x, agent_output_y, '--', color=color, linewidth=0.8, alpha=0.8)
 
     ################ Static road polylines ################
 
@@ -455,34 +515,30 @@ def visualize_model_inputs_and_output(model_input, model_output,
     num_polylines = static_roadgraph.shape[0]
     for polyline_idx in range(num_polylines):
         polyline = static_roadgraph[polyline_idx, ...]
-        polyline_valid = static_roadgraph_valid[polyline_idx, :]
+        polyline_valid = static_roadgraph_valid[polyline_idx, :].detach().cpu().numpy()
         
         if polyline_valid.any():  # Only plot if there are valid points
-            # Get valid points from this polyline [x, y, z, type]
-            valid_points = polyline[polyline_valid]
+            # Get coordinates from this polyline [x, y, z, type]
+            x_coords = polyline[:, 0].detach().cpu().numpy()
+            y_coords = polyline[:, 1].detach().cpu().numpy()
             
-            if len(valid_points) > 0:
-                x_coords = valid_points[:, 0].detach().cpu().numpy()
-                y_coords = valid_points[:, 1].detach().cpu().numpy()
-                
-                # Alternate between two shades of gray
-                gray_shade = 0.3 if polyline_idx % 2 == 0 else 0.5
-                
-                # Plot polyline as a continuous line
-                plt.plot(x_coords, y_coords, color=str(gray_shade), linewidth=0.8, alpha=0.6)
+            # Alternate between two shades of gray
+            gray_shade = 0.3 if polyline_idx % 2 == 0 else 0.5
+            
+            # Plot polyline respecting validity mask, handling gaps between segments
+            visualize_trajectory_with_validity(x_coords, y_coords, polyline_valid, 
+                                          color=str(gray_shade), linestyle='-', 
+                                          linewidth=0.8, alpha=0.6)
 
     # Beautify
 
-    # Set limits with safety checks
-    static_roadgraph = model_input['static_roadgraph_input'][index_in_batch, ...]
-    static_roadgraph_valid = model_input['static_roadgraph_valid'][index_in_batch, :, :].bool()
-    
-    # Flatten all valid road points to get the extent
+    # Set limits with safety checks - collect all valid road points for axis limits
     all_valid_points = []
-    for polyline_idx in range(static_roadgraph.shape[0]):
+    for polyline_idx in range(num_polylines):
+        polyline = static_roadgraph[polyline_idx, ...]
         polyline_valid = static_roadgraph_valid[polyline_idx, :]
         if polyline_valid.any():
-            valid_points = static_roadgraph[polyline_idx, polyline_valid, :2]
+            valid_points = polyline[polyline_valid, :2]
             all_valid_points.append(valid_points.detach().cpu().numpy())
     
     if all_valid_points:
