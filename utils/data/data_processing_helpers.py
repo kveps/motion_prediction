@@ -121,12 +121,10 @@ def transform_parsed_dataset_to_av_frame(tf_dataset):
     transformed = {}  # Create a new dictionary
 
     # Get AV index in the set of agents
-    av_idx = 0
-    for i in range(tf_dataset['state/current/x'].shape[0]):
-        if tf_dataset['state/is_sdc'][i] == 1:
-            av_idx = i
-    assert (av_idx is not None)
-
+    is_sdc_tensor = tf_dataset['state/is_sdc']    
+    sdc_indices = tf.where(is_sdc_tensor == 1)
+    av_idx = sdc_indices[0, 0]
+    
     # Set AV center and yaw
     num_current_states = tf_dataset['state/current/x'].shape[1]
     av_center_x = tf_dataset['state/current/x'][av_idx,

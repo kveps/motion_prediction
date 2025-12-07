@@ -178,7 +178,7 @@ with torch.no_grad():
             'agent_trajs': trajectories,
             'agent_probs': probs,
         }
-        print("Static road size: ", static_road.size())
+
         # Prepare model input dictionary in the format expected by visualization function
         model_input = {
             'agent_input': agents_cont,
