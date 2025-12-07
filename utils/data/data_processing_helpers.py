@@ -23,7 +23,6 @@ def get_data_file_names(dir_path):
     except NotADirectoryError:
         return f"Not a directory: {dir_path}"
 
-
 def transform_parsed_dataset_to_av_frame(tf_dataset):
     """
     Transforms all relevant features to the AV's frame of reference.
@@ -65,26 +64,36 @@ def transform_parsed_dataset_to_av_frame(tf_dataset):
 
     # Apply transformations to relevant fields
     for key, value in tf_dataset.items():
-        if key == 'roadgraph_samples/xyz':
+        if 'roadgraph_samples/xyz' in key:
             x, y = transform_points(
                 tf_dataset[key][..., 0], tf_dataset[key][..., 1])
             transformed[key] = tf.stack(
                 [x, y, tf_dataset[key][..., 2]], axis=-1)
         elif 'bbox_yaw' in key or 'vel_yaw' in key:
+            # Rotation angles are not affected by translation, only keep the rotation-adjusted value
             transformed[key] = value
-        elif key == 'state/past/x' or key == 'state/current/x' or key == 'state/future/x':
+        elif 'state' in key and '/x' in key:
+            # Transform agent state x, y coordinates to AV frame
             y_key = key.replace('x', 'y')
             z_key = key.replace('x', 'z')
             x, y = transform_points(
                 tf_dataset[key], tf_dataset[y_key])
             transformed[key] = x
             transformed[y_key] = y
-            transformed[z_key] = tf_dataset[z_key]
-        elif key == 'state/past/y' or key == 'state/current/y' or key == 'state/future/y':
-            # already handled in the previous case, so do nothing
+            if z_key in tf_dataset:
+                transformed[z_key] = tf_dataset[z_key]
+        elif 'state' in key and ('/y' in key or '/z' in key):
+            # Already handled in the previous case, so do nothing
             pass
-        elif key == 'state/past/z' or key == 'state/current/z' or key == 'state/future/z':
-            # already handled in the previous case, so do nothing
+        elif 'traffic_light_state' in key and '/x' in key:
+            # Transform traffic light x, y coordinates to AV frame
+            y_key = key.replace('x', 'y')
+            x, y = transform_points(
+                tf_dataset[key], tf_dataset[y_key])
+            transformed[key] = x
+            transformed[y_key] = y
+        elif 'traffic_light_state' in key and '/y' in key:
+            # Already handled in the previous case, so do nothing
             pass
         else:
             transformed[key] = value  # Copy unchanged tensors
