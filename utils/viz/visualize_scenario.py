@@ -427,80 +427,96 @@ def visualize_model_inputs_and_output(model_input,
     """
     ############### Agents input ################
 
+    # Get all agent data (not filtered yet)
+    # [batch_size, num_agents, num_timesteps, 2] float32.
+    all_agent_input = model_input['agent_input'][index_in_batch, ...]
+    all_agent_input_x = all_agent_input[:, :, 0].detach().cpu().numpy()
+    all_agent_input_y = all_agent_input[:, :, 1].detach().cpu().numpy()
+
+    all_agent_input_valid = model_input['agent_input_valid'][index_in_batch, ...]
+    all_agent_input_valid = all_agent_input_valid.detach().cpu().numpy()
+
+    # Target agent states
+    # [batch_size, num_agents, num_timesteps, 2] float32.
+    all_agent_target = model_input['agent_target'][index_in_batch, ...]
+    all_agent_target_x = all_agent_target[:, :, 0].detach().cpu().numpy()
+    all_agent_target_y = all_agent_target[:, :, 1].detach().cpu().numpy()
+
+    all_agent_target_valid = model_input['agent_target_valid'][index_in_batch, ...]
+    all_agent_target_valid = all_agent_target_valid.detach().cpu().numpy()
+
     # Setup tracks to predict
     # [num_agents].
     tracks_to_predict = model_input['tracks_to_predict']
     tracks_to_predict = (tracks_to_predict.clamp(min=0).bool())[
         index_in_batch, ...]
-
-    # Past and current agent states
-    # [batch_size, num_agents, num_timesteps, 2] float32.
-    agent_input = model_input['agent_input'][index_in_batch, ...]
-    agent_input = agent_input[tracks_to_predict]
-    agent_input_x = agent_input[:, :, 0].detach().cpu().numpy()
-    agent_input_y = agent_input[:, :, 1].detach().cpu().numpy()
-
-    agent_input_valid = model_input['agent_input_valid'][index_in_batch, ...]
-    agent_input_valid = agent_input_valid[tracks_to_predict].detach().cpu().numpy()
-
-    # Target agent states
-    # [batch_size, num_agents, num_timesteps, 2] float32.
-    agent_target = model_input['agent_target'][index_in_batch, ...]
-    agent_target = agent_target[tracks_to_predict]
-    agent_target_x = agent_target[:, :, 0].detach().cpu().numpy()
-    agent_target_y = agent_target[:, :, 1].detach().cpu().numpy()
-
-    agent_target_valid = model_input['agent_target_valid'][index_in_batch, ...]
-    agent_target_valid = agent_target_valid[tracks_to_predict].detach().cpu().numpy()
-
-    # Get colormap for agents
-    num_agents_to_predict = agent_input.shape[0]
-    colors = cm.get_cmap('tab20', max(num_agents_to_predict, 2))
     
-    # Plot agent input and target trajectories together (same style per agent)
-    for agent_idx in range(num_agents_to_predict):
-        color = colors(agent_idx)
+    # Get AV index (self-driving car) from is_sdc feature
+    # [batch_size, num_agents]
+    is_sdc = model_input['is_sdc']
+    av_idx = None
+    if is_sdc is not None:
+        is_sdc = (is_sdc[index_in_batch, ...] > 0).detach().cpu().numpy()
+        av_idx_candidates = np.where(is_sdc)[0]
+        if len(av_idx_candidates) > 0:
+            av_idx = av_idx_candidates[0]
+    
+    # Determine which agents to visualize: tracks to predict + AV
+    agents_to_visualize = set(np.where(tracks_to_predict.detach().cpu().numpy())[0].tolist())
+    if av_idx is not None:
+        agents_to_visualize.add(av_idx)
+    agents_to_visualize = sorted(list(agents_to_visualize))
+    
+    # Create colormap with distinct colors for all agents to visualize
+    num_agents_to_visualize = len(agents_to_visualize)
+    colors = cm.get_cmap('tab20', max(num_agents_to_visualize, 2))
+    
+    # Plot agent input and target trajectories
+    for color_idx, agent_idx in enumerate(agents_to_visualize):
+        color = colors(color_idx)
         
         # Combined past + current + future trajectory with combined validity mask
-        combined_x = np.concatenate([agent_input_x[agent_idx], agent_target_x[agent_idx]])
-        combined_y = np.concatenate([agent_input_y[agent_idx], agent_target_y[agent_idx]])
-        combined_valid = np.concatenate([agent_input_valid[agent_idx], agent_target_valid[agent_idx]])
-        
+        combined_x = np.concatenate([all_agent_input_x[agent_idx], all_agent_target_x[agent_idx]])
+        combined_y = np.concatenate([all_agent_input_y[agent_idx], all_agent_target_y[agent_idx]])
+        combined_valid = np.concatenate([all_agent_input_valid[agent_idx], all_agent_target_valid[agent_idx]])
+
         # Plot trajectory respecting validity mask
         visualize_trajectory_with_validity(combined_x, combined_y, combined_valid, 
-                                      color=color, linestyle='-', linewidth=0.8, alpha=0.8)
+                                      color=color, linestyle='-', linewidth=1.2, alpha=0.8)
         
-        # Mark the current state (last valid point of input) with a small rectangle
-        input_valid_indices = np.where(agent_input_valid[agent_idx])[0]
+        # Mark the current state (last valid point of input) with a marker
+        input_valid_indices = np.where(all_agent_input_valid[agent_idx])[0]
         if len(input_valid_indices) > 0:
             last_valid_idx = input_valid_indices[-1]
-            current_x = agent_input_x[agent_idx, last_valid_idx]
-            current_y = agent_input_y[agent_idx, last_valid_idx]
-            plt.plot(current_x, current_y, 's', color=color, markersize=2, alpha=0.9)
+            current_x = all_agent_input_x[agent_idx, last_valid_idx]
+            current_y = all_agent_input_y[agent_idx, last_valid_idx]
+            plt.plot(current_x, current_y, marker='s', color=color, markersize=2, alpha=0.9)
 
     ############### Agents output ################
 
     if should_visualize_outputs:
         # Model output agent states
         # [batch_size, num_agents, num_future_trajectories, num_timesteps, 2] float32.
-        agent_trajs = model_output['agent_trajs'][index_in_batch, ...]
-        agent_trajs = agent_trajs[tracks_to_predict]
+        all_agent_trajs = model_output['agent_trajs'][index_in_batch, ...]
         # [batch_size, num_agents, num_future_trajectories] float32.
-        agent_probs = model_output['agent_probs'][index_in_batch, ...]
-        agent_probs = agent_probs[tracks_to_predict]
-        # [num_agents] - get the trajectory index with highest probability
-        agent_highest_prob_traj = torch.argmax(agent_probs, dim=-1)
+        all_agent_probs = model_output['agent_probs'][index_in_batch, ...]
 
-        # Extract and plot the highest probability trajectory for each agent
-        # [num_agents, num_timesteps, 2]
-        num_agents = agent_trajs.shape[0]
-        for agent_idx in range(num_agents):
-            traj_idx = agent_highest_prob_traj[agent_idx].item()
-            agent_output_traj = agent_trajs[agent_idx, traj_idx, :, :2]
+        # Extract and plot the highest probability trajectory for each predicted agent
+        for color_idx, agent_idx in enumerate(agents_to_visualize):
+            # Only plot predictions for agents we're predicting, not the AV
+            if agent_idx not in np.where(tracks_to_predict.detach().cpu().numpy())[0]:
+                continue
+                
+            agent_trajs = all_agent_trajs[agent_idx]
+            agent_probs = all_agent_probs[agent_idx]
+            # Get the trajectory index with highest probability
+            traj_idx = torch.argmax(agent_probs).item()
+            
+            agent_output_traj = agent_trajs[traj_idx, :, :2]
             agent_output_x = agent_output_traj[:, 0].detach().cpu().numpy()
             agent_output_y = agent_output_traj[:, 1].detach().cpu().numpy()
             
-            color = colors(agent_idx)
+            color = colors(color_idx)
             # Plot model output as dashed line (same thickness as road polylines)
             plt.plot(agent_output_x, agent_output_y, '--', color=color, linewidth=0.8, alpha=0.8)
 
@@ -564,7 +580,7 @@ def visualize_model_inputs_and_output(model_input,
     from matplotlib.lines import Line2D
     legend_elements = [
         Line2D([0], [0], color='gray', linewidth=0.8, label='Agent Trajectory (Input + Target)'),
-        Line2D([0], [0], marker='s', color='w', markerfacecolor='gray', markersize=2, label='Current State', linestyle='none'),
+        Line2D([0], [0], marker='s', color='w', markerfacecolor='gray', markersize=2, label='Agent Current State', linestyle='none'),
         Line2D([0], [0], color='gray', linewidth=0.8, linestyle='--', label='Model Output (Highest Prob)'),
         Line2D([0], [0], color='k', linewidth=0.8, label='Road Polylines', alpha=0.6),
     ]

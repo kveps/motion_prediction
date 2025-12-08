@@ -51,8 +51,8 @@ def transform_parsed_dataset_to_av_frame(tf_dataset):
                                                   num_current_states - 1]
 
     # Compute the rotation matrix
-    cos_yaw = tf.cos(-av_yaw)
-    sin_yaw = tf.sin(-av_yaw)
+    cos_yaw = tf.cos(av_yaw)
+    sin_yaw = tf.sin(av_yaw)
     rotation_matrix = tf.reshape(
         tf.stack([cos_yaw, -sin_yaw, sin_yaw, cos_yaw], axis=0), [2, 2])
 

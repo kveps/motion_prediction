@@ -81,6 +81,8 @@ class LSTMMotionDataset(Dataset):
         # Agent targets
         agent_target, agent_target_valid = arrange_agent_model_target(
             torch_element)
+        # Is AV/SDC
+        is_sdc = torch_element['state/is_sdc']
         # Tracks to predict
         tracks_to_predict = torch_element['state/tracks_to_predict']
 
@@ -93,6 +95,7 @@ class LSTMMotionDataset(Dataset):
             'agent_input_valid': agent_input_valid,
             'agent_target': agent_target,
             'agent_target_valid': agent_target_valid,
+            'is_sdc': is_sdc,
             'tracks_to_predict': tracks_to_predict,
         }
 
@@ -164,6 +167,8 @@ class TransformerMotionDataset(Dataset):
         # Agent targets
         agent_target, agent_target_valid = arrange_agent_model_target(
             torch_element)
+        # Is AV/SDC
+        is_sdc = torch_element['state/is_sdc']
         # Tracks to predict
         tracks_to_predict = torch_element['state/tracks_to_predict']
 
@@ -178,6 +183,7 @@ class TransformerMotionDataset(Dataset):
             'agent_input_valid': agent_input_valid,
             'agent_target': agent_target,
             'agent_target_valid': agent_target_valid,
+            'is_sdc': is_sdc,
             'tracks_to_predict': tracks_to_predict,
         }
 

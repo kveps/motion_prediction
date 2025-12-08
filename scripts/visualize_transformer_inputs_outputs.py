@@ -155,6 +155,7 @@ with torch.no_grad():
         dyn_road_valid = dataset_element['dynamic_roadgraph_valid'].to(device)
         agent_target = dataset_element['agent_target'].to(device)
         agent_target_valid = dataset_element['agent_target_valid'].to(device)
+        is_sdc = dataset_element['is_sdc'].to(device)
         tracks_to_predict = dataset_element['tracks_to_predict'].to(device)
 
         # Initialize future agents
@@ -187,6 +188,7 @@ with torch.no_grad():
             'agent_target_valid': agent_target_valid,
             'static_roadgraph_input': static_road,
             'static_roadgraph_valid': static_road_valid,
+            'is_sdc': is_sdc,
             'tracks_to_predict': tracks_to_predict,
         }
 
