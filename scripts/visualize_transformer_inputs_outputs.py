@@ -18,7 +18,7 @@ Usage:
     python visualize_transformer_inputs_outputs.py --num-samples 5
 """
 from models.transformer.transformer import Transformer_NN
-from utils.data.motion_dataset import TransformerMotionDataset
+from utils.data.motion_dataset import MotionDataset
 from utils.viz.visualize_scenario import visualize_model_inputs_and_output
 from torch.utils.data import DataLoader
 import torch
@@ -68,8 +68,8 @@ else:
 print(f"Loading {args.data_split} dataset from: {data_path}")
 
 # Create the dataset and dataloader
-dataset = TransformerMotionDataset(data_path)
-dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
+dataset = MotionDataset(data_path)
+dataloader = DataLoader(dataset, batch_size=args.batch_size)
 
 print(f"Total samples available: {len(dataset)}")
 print(f"Visualizing first {min(args.num_samples, len(dataset))} samples")

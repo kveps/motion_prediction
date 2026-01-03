@@ -13,7 +13,7 @@ Usage:
 """
 from models.loss.nll_loss import NLL_Loss
 from models.transformer.transformer import Transformer_NN
-from utils.data.motion_dataset import TransformerMotionDataset
+from utils.data.motion_dataset import MotionDataset
 from utils.viz.visualize_scenario import visualize_model_inputs_and_output
 from torch.utils.data import DataLoader
 import torch
@@ -32,8 +32,8 @@ parser.add_argument('--model-path', type=str, default=None,
                     help='Path to model weights for testing')
 parser.add_argument('--epochs', type=int, default=100,
                     help='Number of training epochs (default: 100)')
-parser.add_argument('--batch-size', type=int, default=5,
-                    help='Batch size for training/validation (default: 5)')
+parser.add_argument('--batch-size', type=int, default=16,
+                    help='Batch size for training/validation (default: 16)')
 parser.add_argument('--lr', type=float, default=0.01,
                     help='Learning rate (default: 0.01)')
 args = parser.parse_args()
@@ -69,19 +69,14 @@ print(f"Models will be saved to: {SAVE_DIR}")
 
 # Create the necessary dataloaders
 print("Loading datasets...")
-training_dataset = TransformerMotionDataset(TRAINING_PATH)
-training_dataloader = DataLoader(training_dataset, batch_size=args.batch_size, shuffle=True)
+training_dataset = MotionDataset(TRAINING_PATH)
+training_dataloader = DataLoader(training_dataset, batch_size=args.batch_size)
 
-validation_dataset = TransformerMotionDataset(VALIDATION_PATH)
-validation_dataloader = DataLoader(validation_dataset, batch_size=args.batch_size, shuffle=False)
+validation_dataset = MotionDataset(VALIDATION_PATH)
+validation_dataloader = DataLoader(validation_dataset, batch_size=args.batch_size)
 
-test_dataset = TransformerMotionDataset(TESTING_PATH)
-test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
-
-print(f"Training samples: {len(training_dataset)}")
-print(f"Validation samples: {len(validation_dataset)}")
-print(f"Testing samples: {len(test_dataset)}")
-
+test_dataset = MotionDataset(TESTING_PATH)
+test_dataloader = DataLoader(test_dataset, batch_size=1)
 
 # Setup necessary input sizes for the model
 dummy_element = training_dataset[0]
@@ -167,7 +162,9 @@ if not args.test:
             train_loss += loss.item()
             
             if (batch_idx + 1) % 10 == 0:
-                print(f"Batch [{batch_idx+1}/{len(training_dataloader)}], Loss: {loss.item():.4f}")
+                print(f"Batch {batch_idx+1}, \
+                Done with {batch_idx*args.batch_size+args.batch_size} samples\
+                Loss: {loss.item():.4f}")
 
         avg_train_loss = train_loss / len(training_dataloader)
 

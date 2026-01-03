@@ -1,6 +1,6 @@
 import tensorflow as tf
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, IterableDataset
 from utils.data.features_description import get_features_description
 from utils.viz.visualize_scenario import (
     visualize_polylines,
@@ -29,9 +29,8 @@ def _parse_function(example_proto):
     filtered = downsample_roadgraph(transformed)
     return filtered
 
-
-class LSTMMotionDataset(Dataset):
-    def __init__(self, data_path):
+class MotionDataset(IterableDataset):
+    def __init__(self, data_path, shuffle=False):
         self.data_path = data_path
         
         # Handle both local and GCS paths
@@ -52,97 +51,59 @@ class LSTMMotionDataset(Dataset):
         # Load the tf dataset
         tf_dataset = tf.data.TFRecordDataset(data_files)
         self.parsed_tf_dataset = tf_dataset.map(_parse_function)
-        self.data_files = data_files
+
+        # Shuffle the dataset if requested
+        if shuffle: 
+            self.parsed_tf_dataset = self.parsed_tf_dataset.shuffle(
+                buffer_size=1000)
 
     def __len__(self):
-        # Determine the length of the TensorFlow dataset
-        return len(self.data_files)
+        count = 0
+        for element in self.parsed_tf_dataset:
+            count += 1
+        return count
 
-    def __getitem__(self, idx):
-        # Take the element at the given index
-        element = list(self.parsed_tf_dataset.skip(idx).take(1))[0]
+    def __iter__(self):
+        for element in self.parsed_tf_dataset:
 
-        # Convert TensorFlow tensors to NumPy arrays
-        numpy_element = {key: value.numpy() for key, value in element.items()}
+            # Convert TensorFlow tensors to NumPy arrays
+            numpy_element = {key: value.numpy() for key, value in element.items()}
 
-        # Convert NumPy arrays to PyTorch tensors
-        torch_element = {key: torch.tensor(value)
-                         for key, value in numpy_element.items()}
+            # Convert NumPy arrays to PyTorch tensors
+            torch_element = {key: torch.tensor(value)
+                            for key, value in numpy_element.items()}
 
-        # Static roadgraph
-        static_roadgraph_input, static_roadgraph_valid = arrange_static_roadgraph_model_input(
-            torch_element)
-        # Dynamic roadgraph
-        dynamic_roadgraph_input, dynamic_roadgraph_valid = arrange_dynamic_roadgraph_model_input(
-            torch_element)
-        # Agent states
-        agent_input, agent_input_valid = arrange_agent_model_input(
-            torch_element)
-        # Agent targets
-        agent_target, agent_target_valid = arrange_agent_model_target(
-            torch_element)
-        # Is AV/SDC
-        is_sdc = torch_element['state/is_sdc']
-        # Tracks to predict
-        tracks_to_predict = torch_element['state/tracks_to_predict']
+            # Static roadgraph
+            static_roadgraph_polyline_input, static_roadgraph_polyline_valid = arrange_static_roadgraph_polyline_model_input(
+                torch_element)
+            # Dynamic roadgraph (separate continuous and categorical)
+            dynamic_roadgraph_cont, dynamic_roadgraph_cat, dynamic_roadgraph_valid = arrange_dynamic_roadgraph_model_input(
+                torch_element)
+            # Agent states (separate continuous and categorical)
+            agent_input_cont, agent_input_cat, agent_input_valid = arrange_agent_model_input(
+                torch_element)
+            # Agent targets
+            agent_target, agent_target_valid = arrange_agent_model_target(
+                torch_element)
+            # Is AV/SDC
+            is_sdc = torch_element['state/is_sdc']
+            # Tracks to predict
+            tracks_to_predict = torch_element['state/tracks_to_predict']
 
-        return {
-            'static_roadgraph_input': static_roadgraph_input,
-            'static_roadgraph_valid': static_roadgraph_valid,
-            'dynamic_roadgraph_input': dynamic_roadgraph_input,
-            'dynamic_roadgraph_valid': dynamic_roadgraph_valid,
-            'agent_input': agent_input,
-            'agent_input_valid': agent_input_valid,
-            'agent_target': agent_target,
-            'agent_target_valid': agent_target_valid,
-            'is_sdc': is_sdc,
-            'tracks_to_predict': tracks_to_predict,
-        }
-
-    def get_full_torch_element(self, idx):
-        # Take the element at the given index
-        element = list(self.parsed_tf_dataset.skip(idx).take(1))[0]
-
-        # Convert TensorFlow tensors to NumPy arrays
-        numpy_element = {key: value.numpy() for key, value in element.items()}
-
-        # Convert NumPy arrays to PyTorch tensors
-        torch_element = {key: torch.tensor(value)
-                         for key, value in numpy_element.items()}
-
-        return torch_element
-
-    def get_tf_dataset(self):
-        return self.parsed_tf_dataset
-
-
-class TransformerMotionDataset(Dataset):
-    def __init__(self, data_path):
-        self.data_path = data_path
-        
-        # Handle both local and GCS paths
-        if data_path.startswith('gs://'):
-            # For GCS paths, use TensorFlow's file matching
-            # Remove trailing slash if present
-            path = data_path.rstrip('/')
-            # Waymo dataset uses sharded tfrecord files
-            data_files = tf.io.gfile.glob(path + '/*.tfrecord-*')
-            if not data_files:
-                raise ValueError(f"No .tfrecord-* files found at {path}")
-            print(f"Found {len(data_files)} files in GCS")
-        else:
-            # For local paths, use the original method
-            data_files = get_data_file_names(data_path)
-            data_files = [data_path + file for file in data_files]
-
-        # Load the tf dataset
-        tf_dataset = tf.data.TFRecordDataset(data_files)
-        self.parsed_tf_dataset = tf_dataset.map(_parse_function)
-        self.data_files = data_files
-
-    def __len__(self):
-        # Determine the length of the TensorFlow dataset
-        return len(self.data_files)
+            yield {
+                'static_roadgraph_polyline_input': static_roadgraph_polyline_input,
+                'static_roadgraph_polyline_valid': static_roadgraph_polyline_valid,
+                'dynamic_roadgraph_continuous': dynamic_roadgraph_cont,
+                'dynamic_roadgraph_categorical': dynamic_roadgraph_cat,
+                'dynamic_roadgraph_valid': dynamic_roadgraph_valid,
+                'agent_input_continuous': agent_input_cont,
+                'agent_input_categorical': agent_input_cat,
+                'agent_input_valid': agent_input_valid,
+                'agent_target': agent_target,
+                'agent_target_valid': agent_target_valid,
+                'is_sdc': is_sdc,
+                'tracks_to_predict': tracks_to_predict,
+            }
 
     def __getitem__(self, idx):
         # Take the element at the given index
@@ -208,11 +169,7 @@ class TransformerMotionDataset(Dataset):
 test_usage = False
 if test_usage:
     directory_path = "./data/uncompressed/tf_example/training/"
-    motion_dataset = LSTMMotionDataset(directory_path)
-    visualize_scenario_image(motion_dataset.get_full_torch_element(20))
-
-    directory_path = "./data/uncompressed/tf_example/training/"
-    motion_dataset = TransformerMotionDataset(directory_path)
+    motion_dataset = MotionDataset(directory_path)
     map_polyline, validity = arrange_static_roadgraph_polyline_model_input(
         motion_dataset.get_full_torch_element(20))
     visualize_polylines(map_polyline, validity)
