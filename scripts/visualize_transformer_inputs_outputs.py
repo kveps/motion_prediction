@@ -36,7 +36,7 @@ parser.add_argument('--num-samples', type=int, default=1,
                     help='Number of samples to visualize (default: 5)')
 parser.add_argument('--batch-size', type=int, default=1,
                     help='Batch size for visualization (default: 1)')
-parser.add_argument('--data-split', type=str, default='training',
+parser.add_argument('--data-split', type=str, default='testing',
                     choices=['training', 'validation', 'testing'],
                     help='Which data split to visualize (default: training)')
 args = parser.parse_args()
@@ -70,9 +70,6 @@ print(f"Loading {args.data_split} dataset from: {data_path}")
 # Create the dataset and dataloader
 dataset = MotionDataset(data_path)
 dataloader = DataLoader(dataset, batch_size=args.batch_size)
-
-print(f"Total samples available: {len(dataset)}")
-print(f"Visualizing first {min(args.num_samples, len(dataset))} samples")
 
 # Setup necessary input sizes for the model
 print("\nExtracting model configuration from dataset...")
@@ -192,9 +189,6 @@ with torch.no_grad():
             'tracks_to_predict': tracks_to_predict,
         }
 
-        # Visualize
-        print(f"Visualizing sample {batch_idx + 1}/{min(args.num_samples, len(dataset))}")
-        
         # Create save path with timestamp
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         save_path = os.path.join(tmp_dir, f"visualization_sample_{batch_idx + 1}_{timestamp}.png")

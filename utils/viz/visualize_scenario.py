@@ -417,7 +417,7 @@ def visualize_model_inputs_and_output(model_input,
                                       index_in_batch=0,
                                       should_visualize_outputs=True, 
                                       save_path=None):
-    """ Visualize model input and output as a single image
+    """ Visualize model input+target and input+output as two subplots in one window
 
     Args:
         model_input (dict): A dictionary containing the model input.
@@ -425,6 +425,9 @@ def visualize_model_inputs_and_output(model_input,
         index_in_batch (int): The index of the batch to visualize
         save_path (str): Optional path to save the plot. If None, displays the plot.
     """
+    # Create figure with 2 subplots
+    fig, (ax_target, ax_output) = plt.subplots(1, 2, figsize=(14, 6))
+    
     ############### Agents input ################
 
     # Get all agent data (not filtered yet)
@@ -471,85 +474,21 @@ def visualize_model_inputs_and_output(model_input,
     num_agents_to_visualize = len(agents_to_visualize)
     colors = cm.get_cmap('tab20', max(num_agents_to_visualize, 2))
     
-    # Plot agent input and target trajectories
-    for color_idx, agent_idx in enumerate(agents_to_visualize):
-        color = colors(color_idx)
-        
-        # Combined past + current + future trajectory with combined validity mask
-        combined_x = np.concatenate([all_agent_input_x[agent_idx], all_agent_target_x[agent_idx]])
-        combined_y = np.concatenate([all_agent_input_y[agent_idx], all_agent_target_y[agent_idx]])
-        combined_valid = np.concatenate([all_agent_input_valid[agent_idx], all_agent_target_valid[agent_idx]])
-
-        # Plot trajectory respecting validity mask
-        visualize_trajectory_with_validity(combined_x, combined_y, combined_valid, 
-                                      color=color, linestyle='-', linewidth=1.2, alpha=0.8)
-        
-        # Mark the current state (last valid point of input) with a marker
-        input_valid_indices = np.where(all_agent_input_valid[agent_idx])[0]
-        if len(input_valid_indices) > 0:
-            last_valid_idx = input_valid_indices[-1]
-            current_x = all_agent_input_x[agent_idx, last_valid_idx]
-            current_y = all_agent_input_y[agent_idx, last_valid_idx]
-            plt.plot(current_x, current_y, marker='s', color=color, markersize=2, alpha=0.9)
-
-    ############### Agents output ################
-
-    if should_visualize_outputs:
-        # Model output agent states
-        # [batch_size, num_agents, num_future_trajectories, num_timesteps, 2] float32.
-        all_agent_trajs = model_output['agent_trajs'][index_in_batch, ...]
-        # [batch_size, num_agents, num_future_trajectories] float32.
-        all_agent_probs = model_output['agent_probs'][index_in_batch, ...]
-
-        # Extract and plot the highest probability trajectory for each predicted agent
-        for color_idx, agent_idx in enumerate(agents_to_visualize):
-            # Only plot predictions for agents we're predicting, not the AV
-            if agent_idx not in np.where(tracks_to_predict.detach().cpu().numpy())[0]:
-                continue
-                
-            agent_trajs = all_agent_trajs[agent_idx]
-            agent_probs = all_agent_probs[agent_idx]
-            # Get the trajectory index with highest probability
-            traj_idx = torch.argmax(agent_probs).item()
-            
-            agent_output_traj = agent_trajs[traj_idx, :, :2]
-            agent_output_x = agent_output_traj[:, 0].detach().cpu().numpy()
-            agent_output_y = agent_output_traj[:, 1].detach().cpu().numpy()
-            
-            color = colors(color_idx)
-            # Plot model output as dashed line (same thickness as road polylines)
-            plt.plot(agent_output_x, agent_output_y, '--', color=color, linewidth=0.8, alpha=0.8)
-
-    ################ Static road polylines ################
+    # Define colors for different trajectory types
+    input_color = 'blue'  # Color for input trajectories
+    target_color = 'green'  # Color for target trajectories
+    output_color = 'red'  # Color for output trajectories
+    
+    ################ Static road polylines (for both plots) ################
 
     # Static road polylines
     # [batch_size, num_polylines, max_polyline_length, num_features(x,y,z,type)]
     static_roadgraph = model_input['static_roadgraph_input'][index_in_batch, ...]
     static_roadgraph_valid = model_input['static_roadgraph_valid'][index_in_batch, :, :].bool()
     
-    # Plot each polyline separately with alternating shades of gray
-    num_polylines = static_roadgraph.shape[0]
-    for polyline_idx in range(num_polylines):
-        polyline = static_roadgraph[polyline_idx, ...]
-        polyline_valid = static_roadgraph_valid[polyline_idx, :].detach().cpu().numpy()
-        
-        if polyline_valid.any():  # Only plot if there are valid points
-            # Get coordinates from this polyline [x, y, z, type]
-            x_coords = polyline[:, 0].detach().cpu().numpy()
-            y_coords = polyline[:, 1].detach().cpu().numpy()
-            
-            # Alternate between two shades of gray
-            gray_shade = 0.3 if polyline_idx % 2 == 0 else 0.5
-            
-            # Plot polyline respecting validity mask, handling gaps between segments
-            visualize_trajectory_with_validity(x_coords, y_coords, polyline_valid, 
-                                          color=str(gray_shade), linestyle='-', 
-                                          linewidth=0.8, alpha=0.6)
-
-    # Beautify
-
-    # Set limits with safety checks - collect all valid road points for axis limits
+    # Get limits for consistent viewing between both plots
     all_valid_points = []
+    num_polylines = static_roadgraph.shape[0]
     for polyline_idx in range(num_polylines):
         polyline = static_roadgraph[polyline_idx, ...]
         polyline_valid = static_roadgraph_valid[polyline_idx, :]
@@ -568,33 +507,161 @@ def visualize_model_inputs_and_output(model_input,
         x_padding = (road_x_max - road_x_min) * 0.1 if road_x_max > road_x_min else 10
         y_padding = (road_y_max - road_y_min) * 0.1 if road_y_max > road_y_min else 10
         
-        plt.xlim(road_x_min - x_padding, road_x_max + x_padding)
-        plt.ylim(road_y_min - y_padding, road_y_max + y_padding)
-
-    # Set plot
-    plt.xlabel('X (m)', fontsize=11)
-    plt.ylabel('Y (m)', fontsize=11)
-    plt.title('Transformer Model: Input and Output Visualization', fontsize=12, fontweight='bold')
+        x_lim = (road_x_min - x_padding, road_x_max + x_padding)
+        y_lim = (road_y_min - y_padding, road_y_max + y_padding)
+    else:
+        x_lim = None
+        y_lim = None
     
-    # Create custom legend
+    ################ LEFT PLOT: Input + Target ################
+    
+    plt.sca(ax_target)
+    
+    # Plot road polylines for target plot
+    for polyline_idx in range(num_polylines):
+        polyline = static_roadgraph[polyline_idx, ...]
+        polyline_valid = static_roadgraph_valid[polyline_idx, :].detach().cpu().numpy()
+        
+        if polyline_valid.any():
+            x_coords = polyline[:, 0].detach().cpu().numpy()
+            y_coords = polyline[:, 1].detach().cpu().numpy()
+            gray_shade = 0.3 if polyline_idx % 2 == 0 else 0.5
+            visualize_trajectory_with_validity(x_coords, y_coords, polyline_valid, 
+                                          color=str(gray_shade), linestyle='-', 
+                                          linewidth=0.8, alpha=0.6)
+    
+    # Plot agent input and target trajectories
+    for agent_idx in agents_to_visualize:
+        # Plot input trajectory in blue
+        input_x = all_agent_input_x[agent_idx]
+        input_y = all_agent_input_y[agent_idx]
+        input_valid = all_agent_input_valid[agent_idx]
+        visualize_trajectory_with_validity(input_x, input_y, input_valid, 
+                                      color=input_color, linestyle='-', linewidth=1.2, alpha=0.8)
+        
+        # Plot target trajectory in green
+        target_x = all_agent_target_x[agent_idx]
+        target_y = all_agent_target_y[agent_idx]
+        target_valid = all_agent_target_valid[agent_idx]
+        visualize_trajectory_with_validity(target_x, target_y, target_valid, 
+                                      color=target_color, linestyle='-', linewidth=1.2, alpha=0.8)
+        
+        # Mark the current state (last valid point of input) with a marker
+        input_valid_indices = np.where(input_valid)[0]
+        if len(input_valid_indices) > 0:
+            last_valid_idx = input_valid_indices[-1]
+            current_x = input_x[last_valid_idx]
+            current_y = input_y[last_valid_idx]
+            ax_target.plot(current_x, current_y, marker='s', color='black', markersize=4, alpha=0.9)
+    
+    if x_lim and y_lim:
+        ax_target.set_xlim(x_lim)
+        ax_target.set_ylim(y_lim)
+    
+    ax_target.set_xlabel('X (m)', fontsize=11)
+    ax_target.set_ylabel('Y (m)', fontsize=11)
+    ax_target.set_title('Input and Target Trajectories', fontsize=12, fontweight='bold')
+    ax_target.grid(True, alpha=0.3)
+    ax_target.axis('equal')
+    
+    # Create legend for target plot
     from matplotlib.lines import Line2D
-    legend_elements = [
-        Line2D([0], [0], color='gray', linewidth=0.8, label='Agent Trajectory (Input + Target)'),
-        Line2D([0], [0], marker='s', color='w', markerfacecolor='gray', markersize=2, label='Agent Current State', linestyle='none'),
-        Line2D([0], [0], color='gray', linewidth=0.8, linestyle='--', label='Model Output (Highest Prob)'),
+    legend_elements_target = [
+        Line2D([0], [0], color=input_color, linewidth=1.2, label='Input Trajectory'),
+        Line2D([0], [0], color=target_color, linewidth=1.2, label='Target Trajectory'),
+        Line2D([0], [0], marker='s', color='w', markerfacecolor='black', markersize=4, label='Current State', linestyle='none'),
         Line2D([0], [0], color='k', linewidth=0.8, label='Road Polylines', alpha=0.6),
     ]
-    plt.legend(handles=legend_elements, loc='upper right', fontsize=9, framealpha=0.95, edgecolor='black')
+    ax_target.legend(handles=legend_elements_target, loc='upper right', fontsize=9, framealpha=0.95, edgecolor='black')
     
-    plt.axis('equal')  # Ensure equal scaling for x and y axes
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
+    ################ RIGHT PLOT: Input + Output ################
+    
+    plt.sca(ax_output)
+    
+    # Plot road polylines for output plot
+    for polyline_idx in range(num_polylines):
+        polyline = static_roadgraph[polyline_idx, ...]
+        polyline_valid = static_roadgraph_valid[polyline_idx, :].detach().cpu().numpy()
+        
+        if polyline_valid.any():
+            x_coords = polyline[:, 0].detach().cpu().numpy()
+            y_coords = polyline[:, 1].detach().cpu().numpy()
+            gray_shade = 0.3 if polyline_idx % 2 == 0 else 0.5
+            visualize_trajectory_with_validity(x_coords, y_coords, polyline_valid, 
+                                          color=str(gray_shade), linestyle='-', 
+                                          linewidth=0.8, alpha=0.6)
+    
+    # Plot agent input trajectories
+    for agent_idx in agents_to_visualize:
+        input_x = all_agent_input_x[agent_idx]
+        input_y = all_agent_input_y[agent_idx]
+        input_valid = all_agent_input_valid[agent_idx]
+        visualize_trajectory_with_validity(input_x, input_y, input_valid, 
+                                      color=input_color, linestyle='-', linewidth=1.2, alpha=0.8)
+        
+        # Mark the current state (last valid point of input) with a marker
+        input_valid_indices = np.where(input_valid)[0]
+        if len(input_valid_indices) > 0:
+            last_valid_idx = input_valid_indices[-1]
+            current_x = input_x[last_valid_idx]
+            current_y = input_y[last_valid_idx]
+            ax_output.plot(current_x, current_y, marker='s', color='black', markersize=4, alpha=0.9)
+
+    ############### Agents output ################
+
+    if should_visualize_outputs:
+        # Model output agent states
+        # [batch_size, num_agents, num_future_trajectories, num_timesteps, 2] float32.
+        all_agent_trajs = model_output['agent_trajs'][index_in_batch, ...]
+        # [batch_size, num_agents, num_future_trajectories] float32.
+        all_agent_probs = model_output['agent_probs'][index_in_batch, ...]
+
+        # Extract and plot the highest probability trajectory for each predicted agent
+        for agent_idx in agents_to_visualize:
+            # Only plot predictions for agents we're predicting, not the AV
+            if agent_idx not in np.where(tracks_to_predict.detach().cpu().numpy())[0]:
+                continue
+                
+            agent_trajs = all_agent_trajs[agent_idx]
+            agent_probs = all_agent_probs[agent_idx]
+            # Get the trajectory index with highest probability
+            traj_idx = torch.argmax(agent_probs).item()
+            
+            agent_output_traj = agent_trajs[traj_idx, :, :2]
+            agent_output_x = agent_output_traj[:, 0].detach().cpu().numpy()
+            agent_output_y = agent_output_traj[:, 1].detach().cpu().numpy()
+            
+            # Plot model output in red
+            ax_output.plot(agent_output_x, agent_output_y, color=output_color, linewidth=1.2, alpha=0.8)
+
+    if x_lim and y_lim:
+        ax_output.set_xlim(x_lim)
+        ax_output.set_ylim(y_lim)
+    
+    ax_output.set_xlabel('X (m)', fontsize=11)
+    ax_output.set_ylabel('Y (m)', fontsize=11)
+    ax_output.set_title('Input and Output Trajectories', fontsize=12, fontweight='bold')
+    ax_output.grid(True, alpha=0.3)
+    ax_output.axis('equal')
+    
+    # Create legend for output plot
+    legend_elements_output = [
+        Line2D([0], [0], color=input_color, linewidth=1.2, label='Input Trajectory'),
+        Line2D([0], [0], color=output_color, linewidth=1.2, label='Model Output (Highest Prob)'),
+        Line2D([0], [0], marker='s', color='w', markerfacecolor='black', markersize=4, label='Current State', linestyle='none'),
+        Line2D([0], [0], color='k', linewidth=0.8, label='Road Polylines', alpha=0.6),
+    ]
+    ax_output.legend(handles=legend_elements_output, loc='upper right', fontsize=9, framealpha=0.95, edgecolor='black')
+    
+    ################ Finalize ################
+    
+    fig.tight_layout()
     
     # Save or show
     if save_path:
-        plt.savefig(save_path, dpi=100, bbox_inches='tight')
+        fig.savefig(save_path, dpi=100, bbox_inches='tight')
         print(f"Plot saved to: {save_path}")
-        plt.close()
+        plt.close(fig)
     else:
         plt.show()
 
