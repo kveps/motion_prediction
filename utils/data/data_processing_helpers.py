@@ -380,11 +380,11 @@ def arrange_agent_model_target(torch_dataset_element):
         tuple: A tuple containing the agent model target and the
         valid flag for each agent.
     """
-    # [num_agents, num_future_states, 1]
+    # [num_agents, num_future_states]
     agent_target_states_valid = torch_dataset_element['state/future/valid']
-    agent_target_states_x = torch_dataset_element['state/future/x']
-    agent_target_states_y = torch_dataset_element['state/future/y']
-    agent_target_states_bbox_yaw = torch_dataset_element['state/future/bbox_yaw']
+    agent_target_states_x = torch_dataset_element['state/future/x'] * agent_target_states_valid
+    agent_target_states_y = torch_dataset_element['state/future/y'] * agent_target_states_valid
+    agent_target_states_bbox_yaw = torch_dataset_element['state/future/bbox_yaw'] * agent_target_states_valid
     # [num_agents, num_future_states, 3]
     agent_target = torch.cat(
         (agent_target_states_x.unsqueeze(dim=-1), agent_target_states_y.unsqueeze(dim=-1),

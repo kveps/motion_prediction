@@ -496,22 +496,33 @@ def visualize_model_inputs_and_output(model_input,
             valid_points = polyline[polyline_valid, :2]
             all_valid_points.append(valid_points.detach().cpu().numpy())
     
-    if all_valid_points:
-        all_valid_points = np.concatenate(all_valid_points, axis=0)
-        road_x_min = np.min(all_valid_points[:, 0])
-        road_x_max = np.max(all_valid_points[:, 0])
-        road_y_min = np.min(all_valid_points[:, 1])
-        road_y_max = np.max(all_valid_points[:, 1])
-        
-        # Add some padding to the limits
-        x_padding = (road_x_max - road_x_min) * 0.1 if road_x_max > road_x_min else 10
-        y_padding = (road_y_max - road_y_min) * 0.1 if road_y_max > road_y_min else 10
-        
-        x_lim = (road_x_min - x_padding, road_x_max + x_padding)
-        y_lim = (road_y_min - y_padding, road_y_max + y_padding)
+    # Compute viewport from agent trajectories (input + target) so the view
+    # is tight around the predicted agents rather than the full road extent.
+    agent_points = []
+    for agent_idx in agents_to_visualize:
+        in_valid = all_agent_input_valid[agent_idx].astype(bool)
+        if in_valid.any():
+            agent_points.append(np.stack([all_agent_input_x[agent_idx][in_valid],
+                                          all_agent_input_y[agent_idx][in_valid]], axis=-1))
+        tgt_valid = all_agent_target_valid[agent_idx].astype(bool)
+        if tgt_valid.any():
+            agent_points.append(np.stack([all_agent_target_x[agent_idx][tgt_valid],
+                                          all_agent_target_y[agent_idx][tgt_valid]], axis=-1))
+
+    if agent_points:
+        agent_points = np.concatenate(agent_points, axis=0)
+        cx = (np.max(agent_points[:, 0]) + np.min(agent_points[:, 0])) / 2
+        cy = (np.max(agent_points[:, 1]) + np.min(agent_points[:, 1])) / 2
+        half_span = max(
+            np.max(agent_points[:, 0]) - np.min(agent_points[:, 0]),
+            np.max(agent_points[:, 1]) - np.min(agent_points[:, 1]),
+            40.0,
+        ) / 2 + 30
     else:
-        x_lim = None
-        y_lim = None
+        # No specific agents flagged (e.g. test split); center on AV (origin).
+        cx, cy, half_span = 0.0, 0.0, 80.0
+    x_lim = (cx - half_span, cx + half_span)
+    y_lim = (cy - half_span, cy + half_span)
     
     ################ LEFT PLOT: Input + Target ################
     
@@ -554,15 +565,13 @@ def visualize_model_inputs_and_output(model_input,
             current_y = input_y[last_valid_idx]
             ax_target.plot(current_x, current_y, marker='s', color='black', markersize=4, alpha=0.9)
     
-    if x_lim and y_lim:
-        ax_target.set_xlim(x_lim)
-        ax_target.set_ylim(y_lim)
-    
     ax_target.set_xlabel('X (m)', fontsize=11)
     ax_target.set_ylabel('Y (m)', fontsize=11)
     ax_target.set_title('Input and Target Trajectories', fontsize=12, fontweight='bold')
     ax_target.grid(True, alpha=0.3)
-    ax_target.axis('equal')
+    ax_target.set_aspect('equal', adjustable='box')
+    ax_target.set_xlim(x_lim)
+    ax_target.set_ylim(y_lim)
     
     # Create legend for target plot
     from matplotlib.lines import Line2D
@@ -634,15 +643,13 @@ def visualize_model_inputs_and_output(model_input,
             # Plot model output in red
             ax_output.plot(agent_output_x, agent_output_y, color=output_color, linewidth=1.2, alpha=0.8)
 
-    if x_lim and y_lim:
-        ax_output.set_xlim(x_lim)
-        ax_output.set_ylim(y_lim)
-    
     ax_output.set_xlabel('X (m)', fontsize=11)
     ax_output.set_ylabel('Y (m)', fontsize=11)
     ax_output.set_title('Input and Output Trajectories', fontsize=12, fontweight='bold')
     ax_output.grid(True, alpha=0.3)
-    ax_output.axis('equal')
+    ax_output.set_aspect('equal', adjustable='box')
+    ax_output.set_xlim(x_lim)
+    ax_output.set_ylim(y_lim)
     
     # Create legend for output plot
     legend_elements_output = [

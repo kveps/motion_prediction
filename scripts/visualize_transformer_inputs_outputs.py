@@ -36,7 +36,7 @@ parser.add_argument('--num-samples', type=int, default=1,
                     help='Number of samples to visualize (default: 5)')
 parser.add_argument('--batch-size', type=int, default=1,
                     help='Batch size for visualization (default: 1)')
-parser.add_argument('--data-split', type=str, default='testing',
+parser.add_argument('--data-split', type=str, default='validation',
                     choices=['training', 'validation', 'testing'],
                     help='Which data split to visualize (default: training)')
 args = parser.parse_args()
@@ -192,7 +192,7 @@ with torch.no_grad():
         # Create save path with timestamp
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         save_path = os.path.join(tmp_dir, f"visualization_sample_{batch_idx + 1}_{timestamp}.png")
-        visualize_model_inputs_and_output(model_input, model_output, index_in_batch=0, should_visualize_outputs=False, save_path=save_path)
+        visualize_model_inputs_and_output(model_input, model_output, index_in_batch=0, should_visualize_outputs=True, save_path=save_path)
 
 print(f"\n{'='*60}")
 print("✓ Visualization complete!")
