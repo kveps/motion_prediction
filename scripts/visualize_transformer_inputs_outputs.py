@@ -19,6 +19,7 @@ Usage:
 """
 from models.transformer.transformer import Transformer_NN
 from utils.data.motion_dataset import MotionDataset
+from utils.model.engineered_predictions import ballistic_trajectories
 from utils.viz.visualize_scenario import visualize_model_inputs_and_output
 from torch.utils.data import DataLoader
 import torch
@@ -39,6 +40,8 @@ parser.add_argument('--batch-size', type=int, default=1,
 parser.add_argument('--data-split', type=str, default='validation',
                     choices=['training', 'validation', 'testing'],
                     help='Which data split to visualize (default: training)')
+parser.add_argument('--show-ballistic', action='store_true',
+                    help='Show constant-velocity ballistic predictions instead of model output')
 args = parser.parse_args()
 
 # Determine the device to use
@@ -155,21 +158,18 @@ with torch.no_grad():
         is_sdc = dataset_element['is_sdc'].to(device)
         tracks_to_predict = dataset_element['tracks_to_predict'].to(device)
 
-        # Initialize future agents
-        batch_size, num_agents, _, _ = agents_cont.size()
-        future_agents = torch.randn(
-            (batch_size, num_agents, num_future_trajectories, num_model_features),
-            dtype=torch.float32, device=device)
-        future_agents_valid = torch.ones([batch_size, num_agents, num_future_trajectories], 
-                                          dtype=torch.float32, device=device)
-
-        # Forward pass through model
-        trajectories, probs = model(
-            agents_cont, agents_cat, agents_valid,
-            static_road, static_road_valid,
-            dyn_road_cont, dyn_road_cat, dyn_road_valid,
-            future_agents, future_agents_valid
-        )
+        if args.show_ballistic:
+            # [B, A, T, 4] → [B, A, 1, T, 4] (single mode)
+            trajectories = ballistic_trajectories(
+                agents_cont, num_future_timesteps).unsqueeze(2)
+            probs = torch.ones(*trajectories.shape[:3], device=device)
+        else:
+            # Forward pass through model
+            trajectories, probs = model(
+                agents_cont, agents_cat, agents_valid,
+                static_road, static_road_valid,
+                dyn_road_cont, dyn_road_cat, dyn_road_valid,
+            )
 
         # Prepare model output dictionary
         model_output = {

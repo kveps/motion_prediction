@@ -28,53 +28,34 @@ class NLL_Loss(nn.Module):
                               tracks_to_predict) +
             self.diversity_Loss(predicted_trajectories,
                                ground_truth_states_valid,
-                               tracks_to_predict)
+                               tracks_to_predict) +
+            self.yaw_loss(predicted_trajectories,
+                          ground_truth_trajectory,
+                          ade_per_mode,
+                          ground_truth_states_valid,
+                          tracks_to_predict)
         )
 
     def _compute_ade_per_trajectory(self, predicted_trajectories,
                                     ground_truth_trajectory,
-                                    ground_truth_states_valid,
-                                    use_yaw=False):
+                                    ground_truth_states_valid):
         """
-        Computes the Average Displacement Error (ADE) per trajectory mode.
+        Computes the Average Displacement Error (ADE) per trajectory mode over x, y only.
 
         Args:
-            predicted_trajectories: 
-            [batch_size, num_agents, num_trajectories, num_timesteps, 3] 
-            ground_truth_trajectory: [batch_size, num_agents, num_timesteps, 3]
-            ground_truth_states_valid: [batch_size, num_agents, num_timesteps] 
-            storing validity information for each state.
-            use_yaw: Whether to use yaw in the loss.
+            predicted_trajectories: [batch_size, num_agents, num_trajectories, num_timesteps, 4]
+            ground_truth_trajectory: [batch_size, num_agents, num_timesteps, 4]
+            ground_truth_states_valid: [batch_size, num_agents, num_timesteps]
 
         Returns:
-            Tensor: ADE per trajectory mode, with shape
-            [batch_size, num_agents, num_trajectories].
+            Tensor: ADE per trajectory mode [batch_size, num_agents, num_trajectories].
         """
-        # Calculate ADE for each mode
-        # [batch_size, num_agents, num_trajectories, num_timesteps, 3]
-        ade_diff = predicted_trajectories - \
-            ground_truth_trajectory.unsqueeze(dim=-3)
+        # x, y displacement only — keeps ADE in meters
+        # [batch_size, num_agents, num_trajectories, num_timesteps, 2]
+        xy_diff = (predicted_trajectories[..., :2] -
+                   ground_truth_trajectory[..., :2].unsqueeze(dim=-3))
 
-        if use_yaw:
-            # Handle yaw wrap-around
-            # [batch_size, num_agents, num_trajectories, num_timesteps]
-            yaw_diff = predicted_trajectories[..., 2] - \
-                ground_truth_trajectory[..., 2].unsqueeze(dim=-2)
-            yaw_diff = torch.atan2(torch.sin(yaw_diff), torch.cos(
-                yaw_diff))  # Corrected yaw difference
-
-            # Replace yaw with the corrected difference.
-            ade_diff[..., 2] = yaw_diff
-        else:
-            # [batch_size, num_agents, num_trajectories, num_timesteps, 2]
-            # Ignore yaw
-            ade_diff = ade_diff[..., :2]
-
-        # Apply state valid mask to the ade calculation.
-        # [batch_size, num_agents, num_trajectories, num_timesteps, 2(or 3)]
-        masked_diff = ade_diff * \
-            ground_truth_states_valid.unsqueeze(dim=-1).unsqueeze(dim=-3)
-        # [batch_size, num_agents, num_trajectories]
+        masked_diff = xy_diff * ground_truth_states_valid.unsqueeze(dim=-1).unsqueeze(dim=-3)
         ade_per_mode = torch.norm(masked_diff, dim=-1).sum(dim=-1) / \
             (ground_truth_states_valid.sum(dim=-1).unsqueeze(dim=-1) + 1e-8)
 
@@ -203,5 +184,45 @@ class NLL_Loss(nn.Module):
 
         if num_trajs >= 2:
             diversity_loss /= (num_trajs * (num_trajs - 1)) / 2  # Normalize over number of pairs
-        
+
         return diversity_loss
+
+    def yaw_loss(self, predicted_trajectories, ground_truth_trajectory,
+                 ade_per_mode, ground_truth_states_valid, tracks_to_predict):
+        """
+        Winner-takes-all MSE on sin/cos yaw channels for the best predicted mode.
+
+        Args:
+            predicted_trajectories: [batch_size, num_agents, num_trajectories, num_timesteps, 4]
+            ground_truth_trajectory: [batch_size, num_agents, num_timesteps, 4]
+            ade_per_mode: [batch_size, num_agents, num_trajectories]
+            ground_truth_states_valid: [batch_size, num_agents, num_timesteps]
+            tracks_to_predict: [batch_size, num_agents]
+
+        Returns:
+            Scalar yaw loss.
+        """
+        # Pick the best mode per agent
+        # [batch_size, num_agents]
+        best_mode = torch.argmin(ade_per_mode, dim=-1)
+
+        # Gather the best mode's trajectory: [batch_size, num_agents, num_timesteps, 4]
+        best_mode_idx = best_mode.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        best_mode_idx = best_mode_idx.expand(-1, -1, -1, predicted_trajectories.size(-2),
+                                             predicted_trajectories.size(-1))
+        best_traj = predicted_trajectories.gather(dim=2, index=best_mode_idx).squeeze(2)
+
+        # MSE on sin and cos channels (indices 2 and 3)
+        # [batch_size, num_agents, num_timesteps]
+        sin_err = (best_traj[..., 2] - ground_truth_trajectory[..., 2]) ** 2
+        cos_err = (best_traj[..., 3] - ground_truth_trajectory[..., 3]) ** 2
+        yaw_err = (sin_err + cos_err) * ground_truth_states_valid
+
+        valid_agents_mask = (ground_truth_states_valid.sum(dim=-1) > 0) & tracks_to_predict.bool()
+
+        if valid_agents_mask.sum() == 0:
+            return torch.tensor(0.0, device=predicted_trajectories.device)
+
+        valid_counts = ground_truth_states_valid[valid_agents_mask].sum(dim=-1) + 1e-8
+        per_agent_yaw_loss = yaw_err[valid_agents_mask].sum(dim=-1) / valid_counts
+        return per_agent_yaw_loss.mean()

@@ -62,6 +62,11 @@ def transform_parsed_dataset_to_av_frame(tf_dataset):
         xy_transformed = tf.linalg.matmul(xy, rotation_matrix)  # Rotate
         return xy_transformed[..., 0], xy_transformed[..., 1]
 
+    def rotate_vectors(vx, vy):
+        """Applies only rotation (no translation) to velocity/direction vectors."""
+        xy = tf.stack([vx, vy], axis=-1)
+        return tf.linalg.matmul(xy, rotation_matrix)
+
     # Apply transformations to relevant fields
     for key, value in tf_dataset.items():
         if 'roadgraph_samples/xyz' in key:
@@ -70,8 +75,18 @@ def transform_parsed_dataset_to_av_frame(tf_dataset):
             transformed[key] = tf.stack(
                 [x, y, tf_dataset[key][..., 2]], axis=-1)
         elif 'bbox_yaw' in key or 'vel_yaw' in key:
-            # Rotation angles are not affected by translation, only keep the rotation-adjusted value
-            transformed[key] = value
+            # Subtract AV heading and wrap to [-π, π]
+            transformed[key] = tf.math.atan2(
+                tf.math.sin(value - av_yaw), tf.math.cos(value - av_yaw))
+        elif 'state' in key and '/velocity_x' in key:
+            # Velocities are vectors: rotate only, no translation
+            y_key = key.replace('velocity_x', 'velocity_y')
+            rotated = rotate_vectors(tf_dataset[key], tf_dataset[y_key])
+            transformed[key] = rotated[..., 0]
+            transformed[y_key] = rotated[..., 1]
+        elif 'state' in key and '/velocity_y' in key:
+            # Already handled above
+            pass
         elif 'state' in key and '/x' in key:
             # Transform agent state x, y coordinates to AV frame
             y_key = key.replace('x', 'y')
@@ -101,32 +116,35 @@ def transform_parsed_dataset_to_av_frame(tf_dataset):
     return transformed
 
 
-def downsample_roadgraph(tf_dataset):
+def filter_roadgraph_by_proximity(tf_dataset, radius=80.0):
     """
-    Downsample the roadgraph of a given tf dataset.
+    Retain only roadgraph points within `radius` metres of the AV.
 
-    Selects every NUM_POINTS_TO_FILTER'th point in the roadgraph, and returns
-    a new dictionary with these points.
+    Works by zeroing out the valid flag for out-of-range points so that
+    tensor shapes remain fixed and the downstream polyline builder
+    (which already skips invalid points) requires no changes.
 
     Args:
-        tf_dataset (dict): A tf dataset element, containing
-        the roadgraph and other data.
+        tf_dataset (dict): A tf dataset element after AV frame transform
+            (AV is at origin).
+        radius (float): Keep points whose 2-D distance from origin is <=
+            this value. Default 80 m covers the 8-second prediction horizon
+            for typical urban speeds.
 
     Returns:
-        dict: A new dictionary with the downsampled roadgraph.
+        dict: Same structure as tf_dataset with updated valid flags.
     """
-    NUM_POINTS_TO_FILTER = 5
-    filtered = {}  # Create a new dictionary
+    xyz = tf_dataset['roadgraph_samples/xyz']           # [N, 3]
+    dist_sq = xyz[:, 0] ** 2 + xyz[:, 1] ** 2          # [N]
+    in_range = tf.cast(dist_sq <= radius ** 2, tf.int64)  # [N]
 
+    filtered = {}
     for key, value in tf_dataset.items():
-        # Downsample the roadgraph
-        if 'roadgraph_samples/' in key:
-            # Create a boolean mask to select every nth row
-            mask = tf.range(value.shape[0]) % NUM_POINTS_TO_FILTER == 0
-            # Apply the mask to the tensor
-            filtered[key] = value[mask]
+        if key == 'roadgraph_samples/valid':
+            # [N, 1] — zero out points outside the radius
+            filtered[key] = value * tf.expand_dims(in_range, axis=-1)
         else:
-            filtered[key] = value  # Copy unchanged tensors
+            filtered[key] = value
 
     return filtered
 
@@ -207,10 +225,13 @@ def arrange_static_roadgraph_polyline_model_input(torch_dataset_element):
                 break
 
             # Fill a new polyline for the next point if
-            # 1. The type changes
-            # 2. The polyline is full
-            # 3. The angle between the current and next direction is too large
-            # 4. The next point is too far from the current point
+            # 1. The next sample is invalid (gap in source data)
+            # 2. The type changes
+            # 3. The polyline is full
+            # 4. The angle between the current and next direction is too large
+            # 5. The next point is too far from the current point
+
+            next_invalid = torch_dataset_element['roadgraph_samples/valid'][i + 1] == 0
 
             # Check if we've reached end of current polyline
             polyline_end = point_idx == MAX_POLYLINE_LENGTH - 1
@@ -223,7 +244,6 @@ def arrange_static_roadgraph_polyline_model_input(torch_dataset_element):
             # Check if the angle between the current and next direction is too large
             curr_dir = torch_dataset_element['roadgraph_samples/dir'][i]
             next_dir = torch_dataset_element['roadgraph_samples/dir'][i + 1]
-            # get angle between the two directions
             angle = torch.acos(
                 torch.dot(curr_dir, next_dir) /
                 (torch.norm(curr_dir) * torch.norm(next_dir)))
@@ -235,7 +255,7 @@ def arrange_static_roadgraph_polyline_model_input(torch_dataset_element):
             dist = torch.norm(curr_point - next_point)
             dist_change = dist > POLYLINE_DISTANCE_THRESHOLD
 
-            if polyline_end or type_change or dir_change or dist_change:
+            if next_invalid or polyline_end or type_change or dir_change or dist_change:
                 polyline_idx += 1
                 point_idx = 0
             else:
@@ -319,7 +339,7 @@ def arrange_agent_model_input(torch_dataset_element):
         (torch_dataset_element['state/past/y'],
          torch_dataset_element['state/current/y']), dim=-1
     ) * agent_input_states_valid
-    agent_input_states_bbox_yaw = torch.cat(
+    bbox_yaw_raw = torch.cat(
         (torch_dataset_element['state/past/bbox_yaw'],
          torch_dataset_element['state/current/bbox_yaw']), dim=-1
     ) * agent_input_states_valid
@@ -331,7 +351,7 @@ def arrange_agent_model_input(torch_dataset_element):
         (torch_dataset_element['state/past/velocity_y'],
          torch_dataset_element['state/current/velocity_y']), dim=-1
     ) * agent_input_states_valid
-    agent_input_states_vel_yaw = torch.cat(
+    vel_yaw_raw = torch.cat(
         (torch_dataset_element['state/past/vel_yaw'],
          torch_dataset_element['state/current/vel_yaw']), dim=-1
     ) * agent_input_states_valid
@@ -343,21 +363,24 @@ def arrange_agent_model_input(torch_dataset_element):
         (torch_dataset_element['state/past/width'],
          torch_dataset_element['state/current/width']), dim=-1
     ) * agent_input_states_valid
-    
+
     # Agent type: keep as integer indices, expand to match valid shape
     agent_input_states_type = torch_dataset_element['state/type'].unsqueeze(dim=-1).expand_as(
         agent_input_states_valid
     ).long().squeeze(dim=-1)  # Shape: [num_agents, num_timesteps]
     agent_input_states_type = torch.where(agent_input_states_type < 0, torch.zeros_like(agent_input_states_type), agent_input_states_type)
 
-    # Continuous features: [num_agents, num_timesteps, 8]
+    # Continuous features: [num_agents, num_timesteps, 10]
+    # Yaw encoded as (sin, cos) to avoid discontinuity at ±π
     agent_input_continuous = torch.cat(
         (agent_input_states_x.unsqueeze(dim=-1),
          agent_input_states_y.unsqueeze(dim=-1),
-         agent_input_states_bbox_yaw.unsqueeze(dim=-1),
+         torch.sin(bbox_yaw_raw).unsqueeze(dim=-1),
+         torch.cos(bbox_yaw_raw).unsqueeze(dim=-1),
          agent_input_states_velocity_x.unsqueeze(dim=-1),
          agent_input_states_velocity_y.unsqueeze(dim=-1),
-         agent_input_states_vel_yaw.unsqueeze(dim=-1),
+         torch.sin(vel_yaw_raw).unsqueeze(dim=-1),
+         torch.cos(vel_yaw_raw).unsqueeze(dim=-1),
          agent_input_states_length.unsqueeze(dim=-1),
          agent_input_states_width.unsqueeze(dim=-1)), dim=-1
     )
@@ -384,11 +407,13 @@ def arrange_agent_model_target(torch_dataset_element):
     agent_target_states_valid = torch_dataset_element['state/future/valid']
     agent_target_states_x = torch_dataset_element['state/future/x'] * agent_target_states_valid
     agent_target_states_y = torch_dataset_element['state/future/y'] * agent_target_states_valid
-    agent_target_states_bbox_yaw = torch_dataset_element['state/future/bbox_yaw'] * agent_target_states_valid
-    # [num_agents, num_future_states, 3]
+    bbox_yaw_raw = torch_dataset_element['state/future/bbox_yaw'] * agent_target_states_valid
+    # [num_agents, num_future_states, 4] — yaw as (sin, cos) to match model input encoding
     agent_target = torch.cat(
-        (agent_target_states_x.unsqueeze(dim=-1), agent_target_states_y.unsqueeze(dim=-1),
-         agent_target_states_bbox_yaw.unsqueeze(dim=-1)), dim=-1
+        (agent_target_states_x.unsqueeze(dim=-1),
+         agent_target_states_y.unsqueeze(dim=-1),
+         torch.sin(bbox_yaw_raw).unsqueeze(dim=-1),
+         torch.cos(bbox_yaw_raw).unsqueeze(dim=-1)), dim=-1
     )
 
     return agent_target, agent_target_states_valid

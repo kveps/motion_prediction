@@ -34,8 +34,8 @@ parser.add_argument('--epochs', type=int, default=100,
                     help='Number of training epochs (default: 100)')
 parser.add_argument('--batch-size', type=int, default=16,
                     help='Batch size for training/validation (default: 16)')
-parser.add_argument('--lr', type=float, default=0.01,
-                    help='Learning rate (default: 0.01)')
+parser.add_argument('--lr', type=float, default=1e-3,
+                    help='Learning rate (default: 1e-3)')
 args = parser.parse_args()
 
 # Determine the device to use
@@ -69,17 +69,18 @@ print(f"Models will be saved to: {SAVE_DIR}")
 
 # Create the necessary dataloaders
 print("Loading datasets...")
-training_dataset = MotionDataset(TRAINING_PATH)
-training_dataloader = DataLoader(training_dataset, batch_size=args.batch_size)
-
-validation_dataset = MotionDataset(VALIDATION_PATH)
-validation_dataloader = DataLoader(validation_dataset, batch_size=args.batch_size)
-
-test_dataset = MotionDataset(TESTING_PATH)
-test_dataloader = DataLoader(test_dataset, batch_size=1)
+if args.test:
+    test_dataset = MotionDataset(TESTING_PATH)
+    test_dataloader = DataLoader(test_dataset, batch_size=1)
+    dummy_element = test_dataset[0]
+else:
+    training_dataset = MotionDataset(TRAINING_PATH)
+    training_dataloader = DataLoader(training_dataset, batch_size=args.batch_size)
+    validation_dataset = MotionDataset(VALIDATION_PATH)
+    validation_dataloader = DataLoader(validation_dataset, batch_size=args.batch_size)
+    dummy_element = training_dataset[0]
 
 # Setup necessary input sizes for the model
-dummy_element = training_dataset[0]
 agent_input_continuous = dummy_element['agent_input_continuous']
 static_roadgraph_input = dummy_element['static_roadgraph_polyline_input']
 dynamic_roadgraph_continuous = dummy_element['dynamic_roadgraph_continuous']
@@ -120,10 +121,12 @@ NUM_EPOCHS = args.epochs
 if not args.test:
     # Training Loop
     print("\nStarting training...")
+    best_val_loss = float('inf')
     for epoch in range(NUM_EPOCHS):
         # Training
         model.train()  # Set model to training mode
         train_loss = 0.0
+        train_batches = 0
         print(f"\n{'='*50}")
         print(f"Epoch {epoch+1}/{NUM_EPOCHS}")
         print(f"{'='*50}")
@@ -142,35 +145,29 @@ if not args.test:
             agent_target_valid = dataset_element['agent_target_valid'].to(device)
             tracks_to_predict = dataset_element['tracks_to_predict'].to(device)
 
-            # Initialize future agents
-            batch_size, num_agents, _, _ = agents_cont.size()
-            future_agents = torch.randn(
-                (batch_size, num_agents, num_future_trajectories, num_model_features),
-                dtype=torch.float32, device=device)
-            future_agents_valid = torch.ones([batch_size, num_agents, num_future_trajectories], dtype=torch.float32, device=device)                
-
             optimizer.zero_grad()
             trajectories, probs = model(
                 agents_cont, agents_cat, agents_valid,
                 static_road, static_road_valid,
                 dyn_road_cont, dyn_road_cat, dyn_road_valid,
-                future_agents, future_agents_valid
             )
             loss = loss_fn(trajectories, probs, agent_target, agent_target_valid, tracks_to_predict)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
-            
+            train_batches += 1
+
             if (batch_idx + 1) % 10 == 0:
                 print(f"Batch {batch_idx+1}, \
                 Done with {batch_idx*args.batch_size+args.batch_size} samples\
                 Loss: {loss.item():.4f}")
 
-        avg_train_loss = train_loss / len(training_dataloader)
+        avg_train_loss = train_loss / train_batches
 
         # Validation
         model.eval()  # Set model to evaluation mode
         val_loss = 0.0
+        val_batches = 0
         with torch.no_grad():
             for dataset_element in validation_dataloader:
                 # Fetch separated continuous and categorical features
@@ -186,23 +183,16 @@ if not args.test:
                 agent_target_valid = dataset_element['agent_target_valid'].to(device)
                 tracks_to_predict = dataset_element['tracks_to_predict'].to(device)
 
-                # Initialize future agents
-                batch_size, num_agents, _, _ = agents_cont.size()
-                future_agents = torch.randn(
-                    (batch_size, num_agents, num_future_trajectories, num_model_features),
-                    dtype=torch.float32, device=device)
-                future_agents_valid = torch.ones([batch_size, num_agents, num_future_trajectories], dtype=torch.float32, device=device)
-
                 trajectories, probs = model(
                     agents_cont, agents_cat, agents_valid,
                     static_road, static_road_valid,
                     dyn_road_cont, dyn_road_cat, dyn_road_valid,
-                    future_agents, future_agents_valid
                 )
                 loss = loss_fn(trajectories, probs, agent_target, agent_target_valid, tracks_to_predict)
                 val_loss += loss.item()
+                val_batches += 1
 
-        avg_val_loss = val_loss / len(validation_dataloader)
+        avg_val_loss = val_loss / val_batches
 
         print(f'\n{"="*50}')
         print(f'Epoch [{epoch+1}/{NUM_EPOCHS}] Summary:')
@@ -210,12 +200,19 @@ if not args.test:
         print(f'  Val Loss:   {avg_val_loss:.4f}')
         print(f'{"="*50}')
 
-        # Save model
+        # Save checkpoint every epoch
         now = datetime.datetime.now()
         filename = f"transformer_model_epoch_{epoch+1}_{now.strftime('%Y%m%d_%H%M%S')}.pt"
         path = os.path.join(SAVE_DIR, filename)
         torch.save(model.state_dict(), path)
-        print(f"Model saved to: {path}")
+        print(f"Checkpoint saved: {path}")
+
+        # Save best model separately
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            best_path = os.path.join(SAVE_DIR, "best_model.pt")
+            torch.save(model.state_dict(), best_path)
+            print(f"New best model saved: {best_path}")
     
     print("\n✓ Training complete!")
 else:
@@ -224,9 +221,8 @@ else:
         raise ValueError("Must specify --model-path for testing mode")
     
     print(f"\nLoading model from: {args.model_path}")
-    model.load_state_dict(torch.load(args.model_path))
-    model.eval()  # Set model to evaluation mode
-    test_loss = 0.0
+    model.load_state_dict(torch.load(args.model_path, map_location=device))
+    model.eval()
     with torch.no_grad():
         for dataset_element in test_dataloader:
             # Fetch separated continuous and categorical features
@@ -242,29 +238,25 @@ else:
             agent_target_valid = dataset_element['agent_target_valid'].to(device)
             tracks_to_predict = dataset_element['tracks_to_predict'].to(device)
 
-            # Initialize future agents
-            batch_size, num_agents, _, _ = agents_cont.size()
-            future_agents = torch.randn(
-                (batch_size, num_agents,  num_future_trajectories, num_model_features),
-                dtype=torch.float32, device=device)
-            future_agents_valid = torch.ones([batch_size, num_agents, num_future_trajectories], dtype=torch.float32, device=device)
-
             trajectories, probs = model(
                 agents_cont, agents_cat, agents_valid,
                 static_road, static_road_valid,
                 dyn_road_cont, dyn_road_cat, dyn_road_valid,
-                future_agents, future_agents_valid
             )
-            loss = loss_fn(trajectories, probs, agent_target, agent_target_valid, tracks_to_predict)
-            test_loss += loss.item()
 
             # Visualize the model inputs and outputs
             model_output = {
                 'agent_trajs': trajectories,
                 'agent_probs': probs,
             }
-            visualize_model_inputs_and_output(dataset_element, model_output)
-
-    avg_test_loss = test_loss / len(test_dataloader)
-
-    print(f'\nTest Loss: {avg_test_loss:.4f}')
+            model_input = {
+                'agent_input': agents_cont,
+                'agent_input_valid': agents_valid,
+                'agent_target': agent_target,
+                'agent_target_valid': agent_target_valid,
+                'static_roadgraph_input': static_road,
+                'static_roadgraph_valid': static_road_valid,
+                'is_sdc': dataset_element['is_sdc'].to(device),
+                'tracks_to_predict': tracks_to_predict,
+            }
+            visualize_model_inputs_and_output(model_input, model_output)

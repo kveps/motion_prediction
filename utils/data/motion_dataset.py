@@ -7,7 +7,7 @@ from utils.viz.visualize_scenario import (
     visualize_scenario_image,
 )
 from utils.data.data_processing_helpers import (
-    downsample_roadgraph,
+    filter_roadgraph_by_proximity,
     get_data_file_names,
     transform_parsed_dataset_to_av_frame,
     arrange_agent_model_input,
@@ -24,9 +24,8 @@ def _parse_function(example_proto):
     parsed = tf.io.parse_single_example(example_proto, fd)
     # Translate the data points around the AV center i.e. AV is at origin
     transformed = transform_parsed_dataset_to_av_frame(parsed)
-    # Downsample the roadgraph
-    # TODO: Do more intelligent filtering of the data
-    filtered = downsample_roadgraph(transformed)
+    # Keep only roadgraph points within 80 m of the AV
+    filtered = filter_roadgraph_by_proximity(transformed)
     return filtered
 
 class MotionDataset(IterableDataset):
