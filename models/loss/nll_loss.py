@@ -66,45 +66,31 @@ class NLL_Loss(nn.Module):
                           ground_truth_states_valid,
                           tracks_to_predict):
         """
-        Computes the weighted NLL loss for trajectory prediction.
-        Only counts loss for valid timesteps and predicted tracks.
+        Winner-takes-all NLL: penalize -log(p) for the mode with lowest ADE.
 
         Args:
             ade_per_mode: [batch_size, num_agents, num_trajectories].
-            predicted_probabilities: 
-            [batch_size, num_agents, num_trajectories].
-            ground_truth_states_valid: 
-            [batch_size, num_agents, num_timesteps] storing validity 
-            information for each state.
+            predicted_probabilities: [batch_size, num_agents, num_trajectories].
+            ground_truth_states_valid: [batch_size, num_agents, num_timesteps].
             tracks_to_predict: [batch_size, num_agents] boolean mask for agents to predict.
 
         Returns:
             Total loss (scalar).
         """
-        # Negative Log-Likelihood (NLL) Loss
-        # Adding a small epsilon for numerical stability
-        # [batch_size, num_agents, num_trajectories]
-        nll_loss = -torch.log(predicted_probabilities + 1e-8)
-
-        # Calculate weighted NLL
         # [batch_size, num_agents]
-        weighted_nll = (nll_loss * ade_per_mode).mean(dim=-1)
+        best_mode = torch.argmin(ade_per_mode, dim=-1)
+        best_prob = predicted_probabilities.gather(
+            dim=-1, index=best_mode.unsqueeze(-1)
+        ).squeeze(-1)
 
-        # Calculate the mean loss only for valid timesteps and agents.
-        # [batch_size, num_agents, num_timesteps] -> [batch_size, num_agents]
-        valid_per_agent = ground_truth_states_valid.sum(dim=-1)
-        
-        # Only include agents that have at least one valid timestep and are marked to predict
-        # [batch_size, num_agents]
-        valid_agents_mask = (valid_per_agent > 0) & tracks_to_predict.bool()
-        
-        # Sum weighted_nll only for valid agents
+        nll = -torch.log(best_prob + 1e-8)
+
+        valid_agents_mask = (ground_truth_states_valid.sum(dim=-1) > 0) & tracks_to_predict.bool()
+
         if valid_agents_mask.sum() > 0:
-            weighted_nll_loss = weighted_nll[valid_agents_mask].sum() / valid_agents_mask.sum()
+            return nll[valid_agents_mask].mean()
         else:
-            weighted_nll_loss = torch.tensor(0.0, device=weighted_nll.device)
-
-        return weighted_nll_loss
+            return torch.tensor(0.0, device=nll.device)
 
     def min_ade_loss(self,
                      ade_per_mode,
