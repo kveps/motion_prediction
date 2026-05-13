@@ -32,8 +32,8 @@ parser.add_argument('--model-path', type=str, default=None,
                     help='Path to model weights for testing')
 parser.add_argument('--epochs', type=int, default=32,
                     help='Number of training epochs (default: 32)')
-parser.add_argument('--batch-size', type=int, default=16,
-                    help='Batch size for training/validation (default: 16)')
+parser.add_argument('--batch-size', type=int, default=24,
+                    help='Batch size for training/validation (default: 24)')
 parser.add_argument('--lr', type=float, default=1e-3,
                     help='Learning rate (default: 1e-3)')
 args = parser.parse_args()
