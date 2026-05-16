@@ -1,3 +1,7 @@
+import glob
+import math
+import os
+import random
 import tensorflow as tf
 import torch
 from torch.utils.data import Dataset, IterableDataset
@@ -31,30 +35,50 @@ def _parse_function(example_proto):
 class MotionDataset(IterableDataset):
     def __init__(self, data_path, shuffle=False):
         self.data_path = data_path
-        
+        self.shuffle = shuffle
+
         # Handle both local and GCS paths
         if data_path.startswith('gs://'):
-            # For GCS paths, use TensorFlow's file matching
-            # Remove trailing slash if present
             path = data_path.rstrip('/')
-            # Waymo dataset uses sharded tfrecord files
             data_files = tf.io.gfile.glob(path + '/*.tfrecord-*')
             if not data_files:
                 raise ValueError(f"No .tfrecord-* files found at {path}")
             print(f"Found {len(data_files)} files in GCS")
         else:
-            # For local paths, use the original method
             data_files = get_data_file_names(data_path)
             data_files = [data_path + file for file in data_files]
 
-        # Load the tf dataset
-        tf_dataset = tf.data.TFRecordDataset(data_files)
-        self.parsed_tf_dataset = tf_dataset.map(_parse_function)
+        self.data_files = data_files
 
-        # Shuffle the dataset if requested
-        if shuffle: 
+        # Full pipeline for __len__ / __getitem__ / get_tf_dataset
+        tf_dataset = tf.data.TFRecordDataset(data_files)
+        self.parsed_tf_dataset = tf_dataset.map(
+            _parse_function, num_parallel_calls=tf.data.AUTOTUNE
+        ).prefetch(tf.data.AUTOTUNE)
+
+        if shuffle:
             self.parsed_tf_dataset = self.parsed_tf_dataset.shuffle(
                 buffer_size=1000)
+
+    def set_epoch(self, epoch, num_files=None):
+        rng = random.Random(epoch)
+        files = list(self.data_files)
+        rng.shuffle(files)
+        self._epoch_files = files[:num_files] if num_files is not None else files
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        del state['parsed_tf_dataset']
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        tf_dataset = tf.data.TFRecordDataset(self.data_files)
+        self.parsed_tf_dataset = tf_dataset.map(
+            _parse_function, num_parallel_calls=tf.data.AUTOTUNE
+        ).prefetch(tf.data.AUTOTUNE)
+        if self.shuffle:
+            self.parsed_tf_dataset = self.parsed_tf_dataset.shuffle(buffer_size=1000)
 
     def __len__(self):
         count = 0
@@ -63,8 +87,28 @@ class MotionDataset(IterableDataset):
         return count
 
     def __iter__(self):
-        for element in self.parsed_tf_dataset:
+        epoch_files = getattr(self, '_epoch_files', self.data_files)
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            files = epoch_files
+        else:
+            per_worker = math.ceil(len(epoch_files) / worker_info.num_workers)
+            start = worker_info.id * per_worker
+            files = epoch_files[start:start + per_worker]
 
+        # Each DataLoader worker gets its own private TF thread pool to prevent
+        # contention across workers on the shared global pool.
+        options = tf.data.Options()
+        options.threading.private_threadpool_size = 2
+        options.threading.max_intra_op_parallelism = 1
+
+        tf_dataset = tf.data.TFRecordDataset(files, num_parallel_reads=tf.data.AUTOTUNE)
+        parsed = tf_dataset.map(_parse_function, num_parallel_calls=tf.data.AUTOTUNE)
+        if self.shuffle:
+            parsed = parsed.shuffle(buffer_size=1000)
+        parsed = parsed.prefetch(tf.data.AUTOTUNE).with_options(options)
+
+        for element in parsed:
             # Convert TensorFlow tensors to NumPy arrays
             numpy_element = {key: value.numpy() for key, value in element.items()}
 
@@ -162,6 +206,41 @@ class MotionDataset(IterableDataset):
 
     def get_tf_dataset(self):
         return self.parsed_tf_dataset
+
+
+class PreprocessedMotionDataset(IterableDataset):
+    """Fast dataset that reads pre-saved .pt files instead of TFRecords.
+
+    Each .pt file is a list of sample dicts produced by preprocess_dataset.py.
+    Workers split files evenly so there is no redundant I/O.
+    """
+
+    def __init__(self, data_path):
+        self.data_path = data_path
+        self.data_files = sorted(glob.glob(os.path.join(data_path, '*.pt')))
+        if not self.data_files:
+            raise ValueError(f"No .pt files found in {data_path}")
+        self._epoch_files = self.data_files
+
+    def set_epoch(self, epoch, num_files=None):
+        rng = random.Random(epoch)
+        files = list(self.data_files)
+        rng.shuffle(files)
+        self._epoch_files = files[:num_files] if num_files is not None else files
+
+    def __iter__(self):
+        epoch_files = getattr(self, '_epoch_files', self.data_files)
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            files = epoch_files
+        else:
+            per_worker = math.ceil(len(epoch_files) / worker_info.num_workers)
+            start = worker_info.id * per_worker
+            files = epoch_files[start:start + per_worker]
+
+        for path in files:
+            for sample in torch.load(path, weights_only=True):
+                yield sample
 
 
 # Example usage

@@ -13,10 +13,12 @@ def scaled_dot_product(q, k, v, mask=None):
     attention = attention / scale
     # [batch, num_heads, num_attending_inputs_q, num_attending_inputs_kv]
     if mask is not None:
-        attention = attention.masked_fill(mask == 0, float(-1e20))
+        attention = attention.masked_fill(mask == 0, float('-inf'))
 
     # [batch, num_heads, num_attending_inputs_q, num_attending_inputs_kv]
     attention = F.softmax(attention, dim=-1)
+    # Rows that are fully masked produce NaN from 0/0 — replace with 0
+    attention = torch.nan_to_num(attention, nan=0.0)
 
     # [batch, num_heads, num_attending_inputs_q, d_head]
     values = torch.matmul(attention, v)
