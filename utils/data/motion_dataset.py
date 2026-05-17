@@ -73,12 +73,10 @@ class MotionDataset(IterableDataset):
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        tf_dataset = tf.data.TFRecordDataset(self.data_files)
-        self.parsed_tf_dataset = tf_dataset.map(
-            _parse_function, num_parallel_calls=tf.data.AUTOTUNE
-        ).prefetch(tf.data.AUTOTUNE)
-        if self.shuffle:
-            self.parsed_tf_dataset = self.parsed_tf_dataset.shuffle(buffer_size=1000)
+        # Workers only call __iter__ (which builds its own pipeline from a file shard).
+        # Rebuilding parsed_tf_dataset over all files here wastes memory and causes
+        # multi-minute startup delays with prefetch(AUTOTUNE) across 600 files.
+        self.parsed_tf_dataset = None
 
     def __len__(self):
         count = 0
@@ -99,14 +97,14 @@ class MotionDataset(IterableDataset):
         # Each DataLoader worker gets its own private TF thread pool to prevent
         # contention across workers on the shared global pool.
         options = tf.data.Options()
-        options.threading.private_threadpool_size = 2
+        options.threading.private_threadpool_size = 4
         options.threading.max_intra_op_parallelism = 1
 
         tf_dataset = tf.data.TFRecordDataset(files, num_parallel_reads=tf.data.AUTOTUNE)
         parsed = tf_dataset.map(_parse_function, num_parallel_calls=tf.data.AUTOTUNE)
         if self.shuffle:
             parsed = parsed.shuffle(buffer_size=1000)
-        parsed = parsed.prefetch(tf.data.AUTOTUNE).with_options(options)
+        parsed = parsed.prefetch(32).with_options(options)
 
         for element in parsed:
             # Convert TensorFlow tensors to NumPy arrays

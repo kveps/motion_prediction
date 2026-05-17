@@ -18,6 +18,7 @@ Usage:
     python visualize_transformer_inputs_outputs.py --num-samples 5
 """
 from models.transformer.transformer import Transformer_NN
+from models.loss.nll_loss import NLL_Loss
 from utils.data.motion_dataset import MotionDataset
 from utils.model.engineered_predictions import ballistic_trajectories
 from utils.viz.visualize_scenario import visualize_model_inputs_and_output
@@ -128,6 +129,7 @@ else:
 
 # Set model to evaluation mode
 model.eval()
+loss_fn = NLL_Loss()
 
 # Create tmp directory for saving plots
 tmp_dir = "./tmp"
@@ -188,6 +190,10 @@ with torch.no_grad():
             'is_sdc': is_sdc,
             'tracks_to_predict': tracks_to_predict,
         }
+
+        # Compute and print loss
+        loss = loss_fn(trajectories, probs, agent_target, agent_target_valid, tracks_to_predict)
+        print(f"Sample {batch_idx + 1} loss: {loss.item():.4f}")
 
         # Create save path with timestamp
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
