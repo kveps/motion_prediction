@@ -148,7 +148,7 @@ if __name__ == '__main__':
     num_past_timesteps = agent_input_continuous.size(dim=-2)
     num_future_features = agent_target.size(dim=-1)
     num_future_timesteps = agent_target.size(dim=-2)
-    num_future_trajectories = 1
+    num_future_trajectories = 3
     num_model_features = 256
     categorical_embedding_dim = 16
 
@@ -375,6 +375,8 @@ if __name__ == '__main__':
                     'agent_target_valid': agent_target_valid,
                     'static_roadgraph_input': static_road,
                     'static_roadgraph_valid': static_road_valid,
+                    'dynamic_roadgraph_continuous': dyn_road_cont,
+                    'dynamic_roadgraph_valid': dyn_road_valid,
                     'is_sdc': dataset_element['is_sdc'].to(device),
                     'tracks_to_predict': tracks_to_predict,
                 }

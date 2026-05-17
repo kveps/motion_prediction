@@ -9,18 +9,18 @@ from models.transformer.layer_norm import LayerNorm
 
 def _create_agent_agent_attention_mask(agents, agents_valid):
     batch_size, num_agents, num_timesteps, _ = agents.size()
-    # Ensure mask is on the same device as agents
     device = agents.device
-    
-    # [batch_size*num_agents, num_timesteps, num_timesteps]
-    time_attention_mask = agents_valid.reshape(
-        batch_size * num_agents, num_timesteps
-    ).unsqueeze(-1).repeat(1, 1, num_timesteps).to(device)
 
-    # [batch_size*num_timesteps, num_agents, num_agents]
-    agent_attention_mask = agents_valid.swapaxes(1, 2).reshape(
-        batch_size * num_timesteps, num_agents,
-    ).unsqueeze(-1).repeat(1, 1, num_agents).to(device)
+    # Outer-product masks: position (q, k) is unmasked iff BOTH q and k are valid.
+
+    # Time mask: per (batch, agent), T_query x T_key
+    time_v = agents_valid.reshape(batch_size * num_agents, num_timesteps).to(device)
+    time_attention_mask = time_v.unsqueeze(-1) * time_v.unsqueeze(-2)
+
+    # Agent mask: per (batch, timestep), A_query x A_key
+    agent_v = agents_valid.swapaxes(1, 2).reshape(
+        batch_size * num_timesteps, num_agents).to(device)
+    agent_attention_mask = agent_v.unsqueeze(-1) * agent_v.unsqueeze(-2)
 
     return time_attention_mask, agent_attention_mask
 
@@ -100,9 +100,14 @@ class EncoderLayer(nn.Module):
             d_model=d_model, hidden=ffn_hidden, drop_prob=drop_prob)
         self.norm2 = LayerNorm()
         self.dropout2 = nn.Dropout(p=drop_prob)
+        self.captured = {}
 
     def forward(self, agents, agents_valid, static_road,
-                static_road_valid, dynamic_road, dynamic_road_valid):
+                static_road_valid, dynamic_road, dynamic_road_valid,
+                capture=False):
+        if capture:
+            self.captured = {}
+
         # [batch_size, num_agents, num_timesteps, d_model]
         residual_agents = agents.clone()
 
@@ -118,7 +123,15 @@ class EncoderLayer(nn.Module):
         time_attention = agents.reshape(
             batch_size * num_agents, num_timesteps, -1)
         # [batch_size*num_agents, num_timesteps, d_model]
-        agents = self.self_attention(time_attention, mask=time_attention_mask)
+        if capture:
+            agents, time_self_attn = self.self_attention(
+                time_attention, mask=time_attention_mask, return_attention=True)
+            # [batch*A, h, T, T] -> [batch, A, h, T, T]
+            self.captured["time_self"] = time_self_attn.reshape(
+                batch_size, num_agents, *time_self_attn.shape[1:]
+            ).detach()
+        else:
+            agents = self.self_attention(time_attention, mask=time_attention_mask)
         # Reshape agents back
         # [batch_size, num_agents, num_timesteps, d_model]
         agents = agents.reshape(
@@ -128,7 +141,15 @@ class EncoderLayer(nn.Module):
         # [batch_size*num_timesteps, num_agents,d_model]
         agent_attenion = agents.swapaxes(1, 2).reshape(
             batch_size*num_timesteps, num_agents, -1)
-        agents = self.self_attention(agent_attenion, mask=agent_attention_mask)
+        if capture:
+            agents, agent_self_attn = self.self_attention(
+                agent_attenion, mask=agent_attention_mask, return_attention=True)
+            # [batch*T, h, A, A] -> [batch, T, h, A, A]
+            self.captured["agent_self"] = agent_self_attn.reshape(
+                batch_size, num_timesteps, *agent_self_attn.shape[1:]
+            ).detach()
+        else:
+            agents = self.self_attention(agent_attenion, mask=agent_attention_mask)
         # Reshape agents back
         # [batch_size, num_agents, num_timesteps, d_model]
         agents = agents.reshape(
@@ -149,8 +170,16 @@ class EncoderLayer(nn.Module):
         agents = agents.swapaxes(1, 2).reshape(
             batch_size*num_timesteps, num_agents, -1)
         # [batch_size*num_timesteps, num_agents, d_model]
-        agents = self.cross_attention(
-            static_road, agents, mask=static_road_agent_mask)
+        if capture:
+            agents, road_attn = self.cross_attention(
+                static_road, agents, mask=static_road_agent_mask, return_attention=True)
+            # [batch*T, h, A, P] -> [batch, T, h, A, P]
+            self.captured["agent_static_road"] = road_attn.reshape(
+                batch_size, num_timesteps, *road_attn.shape[1:]
+            ).detach()
+        else:
+            agents = self.cross_attention(
+                static_road, agents, mask=static_road_agent_mask)
         # Reshape agents back
         # [batch_size, num_agents, num_timesteps, d_model]
         agents = agents.reshape(
@@ -172,8 +201,16 @@ class EncoderLayer(nn.Module):
         agents = agents.swapaxes(1, 2).reshape(
             batch_size*num_timesteps, num_agents, -1)
         # [batch_size*num_timesteps, num_agents, d_model]
-        agents = self.cross_attention(
-            dynamic_road, agents, mask=dynamic_road_agent_mask)
+        if capture:
+            agents, dyn_attn = self.cross_attention(
+                dynamic_road, agents, mask=dynamic_road_agent_mask, return_attention=True)
+            # [batch*T, h, A, D] -> [batch, T, h, A, D]
+            self.captured["agent_dynamic_road"] = dyn_attn.reshape(
+                batch_size, num_timesteps, *dyn_attn.shape[1:]
+            ).detach()
+        else:
+            agents = self.cross_attention(
+                dynamic_road, agents, mask=dynamic_road_agent_mask)
         # Reshape agents back
         # [batch_size, num_agents, num_timesteps, d_model]
         agents = agents.reshape(
@@ -201,8 +238,9 @@ class ContextEncoder(nn.Module):
             for _ in range(num_layers)])
 
     def forward(self, agents, agents_mask, static_road, static_road_mask,
-                dynamic_road, dynamic_road_mask):
+                dynamic_road, dynamic_road_mask, capture=False):
         for layer in self.layers:
             agents = layer(agents, agents_mask, static_road,
-                           static_road_mask, dynamic_road, dynamic_road_mask)
+                           static_road_mask, dynamic_road, dynamic_road_mask,
+                           capture=capture)
         return agents

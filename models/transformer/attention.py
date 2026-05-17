@@ -36,7 +36,7 @@ class MultiHeadAttention(nn.Module):
         self.qkv_linear = nn.Linear(d_model, 3 * d_model)
         self.linear = nn.Linear(d_model, d_model)
 
-    def forward(self, x, mask):
+    def forward(self, x, mask, return_attention=False):
         batch_size, num_attending_inputs_qkv, _ = x.size()
         # [batch * num_attending_inputs_qkv, 3*d_model]
         qkv = self.qkv_linear(x)
@@ -48,12 +48,14 @@ class MultiHeadAttention(nn.Module):
         # [batch, num_heads, num_attending_inputs_qkv, d_head] each
         q, k, v = qkv.chunk(3, dim=-1)
         # [batch, num_heads, num_attending_inputs_qkv, d_head]
-        values, _ = scaled_dot_product(q, k, v, mask.unsqueeze(dim=1))
+        values, attention = scaled_dot_product(q, k, v, mask.unsqueeze(dim=1))
         # [batch, num_attending_inputs_qkv, d_model]
         values = values.permute(0, 2, 1, 3).reshape(
             batch_size, num_attending_inputs_qkv, self.num_heads*self.head_dim)
         # [batch, num_attending_inputs_qkv, d_model]
         out = self.linear(values)
+        if return_attention:
+            return out, attention
         return out
 
 
@@ -68,7 +70,7 @@ class MultiHeadCrossAttention(nn.Module):
         self.q_linear = nn.Linear(d_model, d_model)
         self.linear = nn.Linear(d_model, d_model)
 
-    def forward(self, x, y, mask):
+    def forward(self, x, y, mask, return_attention=False):
         batch_size, num_attending_inputs_kv, _ = x.size()
         _, num_attending_inputs_q, _ = y.size()
         # [batch, num_attending_inputs_kv, 2*d_model]
@@ -88,10 +90,12 @@ class MultiHeadCrossAttention(nn.Module):
         # [batch, num_heads, num_attending_inputs_kv, d_head]
         k, v = kv.chunk(2, dim=-1)
         # [batch, num_heads, num_attending_inputs_q, d_head]
-        values, _ = scaled_dot_product(q, k, v, mask.unsqueeze(dim=1))
+        values, attention = scaled_dot_product(q, k, v, mask.unsqueeze(dim=1))
         # [batch, num_attending_inputs, d_model]
         values = values.permute(0, 2, 1, 3).reshape(
             batch_size, num_attending_inputs_q, self.num_heads*self.head_dim)
         # [batch, num_attending_inputs_q, d_model]
         out = self.linear(values)
+        if return_attention:
+            return out, attention
         return out

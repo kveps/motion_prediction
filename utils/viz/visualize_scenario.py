@@ -485,6 +485,15 @@ def visualize_model_inputs_and_output(model_input,
     # [batch_size, num_polylines, max_polyline_length, num_features(x,y,z,type)]
     static_roadgraph = model_input['static_roadgraph_input'][index_in_batch, ...]
     static_roadgraph_valid = model_input['static_roadgraph_valid'][index_in_batch, :, :].bool()
+
+    # Optional traffic-light positions for faint context overlay.
+    # [batch_size, num_tl, num_timesteps, 2]   continuous (x, y)
+    # [batch_size, num_tl, num_timesteps]      valid mask
+    tl_xy_per_t = None
+    tl_valid_per_t = None
+    if 'dynamic_roadgraph_continuous' in model_input and 'dynamic_roadgraph_valid' in model_input:
+        tl_xy_per_t = model_input['dynamic_roadgraph_continuous'][index_in_batch, ...].detach().cpu().numpy()
+        tl_valid_per_t = model_input['dynamic_roadgraph_valid'][index_in_batch, ...].detach().cpu().numpy().astype(bool)
     
     # Get limits for consistent viewing between both plots
     all_valid_points = []
@@ -524,22 +533,37 @@ def visualize_model_inputs_and_output(model_input,
     x_lim = (cx - half_span, cx + half_span)
     y_lim = (cy - half_span, cy + half_span)
     
+    def _draw_traffic_lights(ax):
+        """Faint goldenrod triangles for each TL's most-recent valid position."""
+        if tl_xy_per_t is None:
+            return
+        for d in range(tl_xy_per_t.shape[0]):
+            tv = tl_valid_per_t[d]
+            if not tv.any():
+                continue
+            last_t = np.where(tv)[0][-1]
+            ax.plot(tl_xy_per_t[d, last_t, 0], tl_xy_per_t[d, last_t, 1],
+                    marker='^', color='goldenrod', markersize=5, alpha=0.4)
+
     ################ LEFT PLOT: Input + Target ################
-    
+
     plt.sca(ax_target)
-    
+
     # Plot road polylines for target plot
     for polyline_idx in range(num_polylines):
         polyline = static_roadgraph[polyline_idx, ...]
         polyline_valid = static_roadgraph_valid[polyline_idx, :].detach().cpu().numpy()
-        
+
         if polyline_valid.any():
             x_coords = polyline[:, 0].detach().cpu().numpy()
             y_coords = polyline[:, 1].detach().cpu().numpy()
             gray_shade = 0.3 if polyline_idx % 2 == 0 else 0.5
-            visualize_trajectory_with_validity(x_coords, y_coords, polyline_valid, 
-                                          color=str(gray_shade), linestyle='-', 
+            visualize_trajectory_with_validity(x_coords, y_coords, polyline_valid,
+                                          color=str(gray_shade), linestyle='-',
                                           linewidth=0.8, alpha=0.6)
+
+    # Faint traffic-light overlay (no-op if not provided in model_input)
+    _draw_traffic_lights(ax_target)
     
     # Plot agent input and target trajectories
     for agent_idx in agents_to_visualize:
@@ -581,6 +605,11 @@ def visualize_model_inputs_and_output(model_input,
         Line2D([0], [0], marker='s', color='w', markerfacecolor='black', markersize=4, label='Current State', linestyle='none'),
         Line2D([0], [0], color='k', linewidth=0.8, label='Road Polylines', alpha=0.6),
     ]
+    if tl_xy_per_t is not None:
+        legend_elements_target.append(
+            Line2D([0], [0], marker='^', color='w', markerfacecolor='goldenrod',
+                   markersize=5, alpha=0.4, linestyle='none', label='Traffic Lights')
+        )
     ax_target.legend(handles=legend_elements_target, loc='upper right', fontsize=9, framealpha=0.95, edgecolor='black')
     
     ################ RIGHT PLOT: Input + Output ################
@@ -591,15 +620,18 @@ def visualize_model_inputs_and_output(model_input,
     for polyline_idx in range(num_polylines):
         polyline = static_roadgraph[polyline_idx, ...]
         polyline_valid = static_roadgraph_valid[polyline_idx, :].detach().cpu().numpy()
-        
+
         if polyline_valid.any():
             x_coords = polyline[:, 0].detach().cpu().numpy()
             y_coords = polyline[:, 1].detach().cpu().numpy()
             gray_shade = 0.3 if polyline_idx % 2 == 0 else 0.5
-            visualize_trajectory_with_validity(x_coords, y_coords, polyline_valid, 
-                                          color=str(gray_shade), linestyle='-', 
+            visualize_trajectory_with_validity(x_coords, y_coords, polyline_valid,
+                                          color=str(gray_shade), linestyle='-',
                                           linewidth=0.8, alpha=0.6)
-    
+
+    # Faint traffic-light overlay (no-op if not provided in model_input)
+    _draw_traffic_lights(ax_output)
+
     # Plot agent input trajectories
     for agent_idx in agents_to_visualize:
         input_x = all_agent_input_x[agent_idx]
@@ -658,6 +690,11 @@ def visualize_model_inputs_and_output(model_input,
         Line2D([0], [0], marker='s', color='w', markerfacecolor='black', markersize=4, label='Current State', linestyle='none'),
         Line2D([0], [0], color='k', linewidth=0.8, label='Road Polylines', alpha=0.6),
     ]
+    if tl_xy_per_t is not None:
+        legend_elements_output.append(
+            Line2D([0], [0], marker='^', color='w', markerfacecolor='goldenrod',
+                   markersize=5, alpha=0.4, linestyle='none', label='Traffic Lights')
+        )
     ax_output.legend(handles=legend_elements_output, loc='upper right', fontsize=9, framealpha=0.95, edgecolor='black')
     
     ################ Finalize ################

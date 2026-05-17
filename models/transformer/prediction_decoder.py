@@ -10,18 +10,19 @@ from models.transformer.layer_norm import LayerNorm
 
 def _create_future_agent_agent_attention_mask(future_agents, future_agents_valid):
     batch_size, num_agents, num_future_trajectories, _ = future_agents.size()
-    # Ensure mask is on the same device as future_agents
     device = future_agents.device
-    
-    # [batch_size*num_future_trajectories, num_agents, num_agents]
-    agent_attention_mask = future_agents_valid.swapaxes(1, 2).reshape(
-        batch_size*num_future_trajectories, num_agents
-    ).unsqueeze(-1).repeat(1, 1, num_agents).to(device)
 
-    # [batch_size*num_agents, num_future_trajectories, num_future_trajectories]
-    trajectory_attention_mask = future_agents_valid.reshape(
-        batch_size*num_agents, num_future_trajectories
-    ).unsqueeze(-1).repeat(1, 1, num_future_trajectories).to(device)
+    # Outer-product masks: (q, k) unmasked iff both endpoints are valid.
+
+    # Agent mask: per (batch, trajectory), A_query x A_key
+    agent_v = future_agents_valid.swapaxes(1, 2).reshape(
+        batch_size * num_future_trajectories, num_agents).to(device)
+    agent_attention_mask = agent_v.unsqueeze(-1) * agent_v.unsqueeze(-2)
+
+    # Trajectory (mode) mask: per (batch, agent), K_query x K_key
+    traj_v = future_agents_valid.reshape(
+        batch_size * num_agents, num_future_trajectories).to(device)
+    trajectory_attention_mask = traj_v.unsqueeze(-1) * traj_v.unsqueeze(-2)
 
     return agent_attention_mask, trajectory_attention_mask
 
@@ -66,9 +67,13 @@ class DecoderLayer(nn.Module):
             d_model=d_model, hidden=ffn_hidden, drop_prob=drop_prob)
         self.norm3 = LayerNorm()
         self.dropout3 = nn.Dropout(p=drop_prob)
+        self.captured = {}
 
     def forward(self, encoded_agents, encoded_agents_valid,
-                future_agents, future_agents_valid):
+                future_agents, future_agents_valid, capture=False):
+        if capture:
+            self.captured = {}
+
         # [batch_size, num_agents, num_future_timesteps, d_model]
         residual_future_agents = future_agents.clone()
 
@@ -84,8 +89,16 @@ class DecoderLayer(nn.Module):
         # [batch_size*num_future_trajectories, num_agents, d_model]
         future_agent_attention = future_agents.swapaxes(1, 2).reshape(
             batch_size*num_future_trajectories, num_agents, -1)
-        future_agents = self.self_attention(
-            future_agent_attention, mask=future_agent_attention_mask)
+        if capture:
+            future_agents, agent_self_attn = self.self_attention(
+                future_agent_attention, mask=future_agent_attention_mask, return_attention=True)
+            # [batch*K, h, A, A] -> [batch, K, h, A, A]
+            self.captured["agent_self"] = agent_self_attn.reshape(
+                batch_size, num_future_trajectories, *agent_self_attn.shape[1:]
+            ).detach()
+        else:
+            future_agents = self.self_attention(
+                future_agent_attention, mask=future_agent_attention_mask)
         # Reshape agents back
         # [batch_size, num_agents, num_future_trajectories, d_model]
         future_agents = future_agents.reshape(
@@ -94,8 +107,16 @@ class DecoderLayer(nn.Module):
         # [batch_size*num_agents, num_future_trajectories, d_model]
         future_trajectory_attention = future_agents.reshape(
             batch_size*num_agents, num_future_trajectories, -1)
-        future_agents = self.self_attention(
-            future_trajectory_attention, mask=future_trajectory_attention_mask)
+        if capture:
+            future_agents, mode_self_attn = self.self_attention(
+                future_trajectory_attention, mask=future_trajectory_attention_mask, return_attention=True)
+            # [batch*A, h, K, K] -> [batch, A, h, K, K]
+            self.captured["mode_self"] = mode_self_attn.reshape(
+                batch_size, num_agents, *mode_self_attn.shape[1:]
+            ).detach()
+        else:
+            future_agents = self.self_attention(
+                future_trajectory_attention, mask=future_trajectory_attention_mask)
         # Reshape agents back
         # [batch_size, num_agents, num_future_trajectories, d_model]
         future_agents = future_agents.reshape(
@@ -121,8 +142,16 @@ class DecoderLayer(nn.Module):
         future_agents = future_agents.reshape(
             batch_size*num_agents, num_future_trajectories, -1)
         # [batch_size*num_agents, num_future_trajectories, d_model]
-        future_agents = self.cross_attention(
-            encoded_agents, future_agents, mask=encoded_future_attention_mask)
+        if capture:
+            future_agents, mode_past_attn = self.cross_attention(
+                encoded_agents, future_agents, mask=encoded_future_attention_mask, return_attention=True)
+            # [batch*A, h, K, T] -> [batch, A, h, K, T]
+            self.captured["mode_past"] = mode_past_attn.reshape(
+                batch_size, num_agents, *mode_past_attn.shape[1:]
+            ).detach()
+        else:
+            future_agents = self.cross_attention(
+                encoded_agents, future_agents, mask=encoded_future_attention_mask)
         # Reshape agents back
         # [batch_size, num_agents, num_future_trajectories, d_model]
         future_agents = future_agents.reshape(
@@ -152,8 +181,9 @@ class PredictionDecoder(nn.Module):
                                     for _ in range(num_layers)])
 
     def forward(self, encoded_agents, past_agents_valid,
-                future_agents, future_agents_valid):
+                future_agents, future_agents_valid, capture=False):
         for layer in self.layers:
             future_agents = layer(encoded_agents, past_agents_valid,
-                                  future_agents, future_agents_valid)
+                                  future_agents, future_agents_valid,
+                                  capture=capture)
         return future_agents

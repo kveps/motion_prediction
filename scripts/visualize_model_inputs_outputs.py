@@ -6,16 +6,16 @@ model inputs and outputs for better understanding of the prediction task.
 
 Usage:
     # Local visualization (default)
-    python visualize_transformer_inputs_outputs.py
+    python visualize_model_inputs_outputs.py
     
     # Colab visualization with GCS paths
-    python visualize_transformer_inputs_outputs.py --colab
+    python visualize_model_inputs_outputs.py --colab
     
     # With custom model path
-    python visualize_transformer_inputs_outputs.py --model-path <path_to_model>
+    python visualize_model_inputs_outputs.py --model-path <path_to_model>
     
     # Visualize specific number of samples
-    python visualize_transformer_inputs_outputs.py --num-samples 5
+    python visualize_model_inputs_outputs.py --num-samples 5
 """
 from models.transformer.transformer import Transformer_NN
 from models.loss.nll_loss import NLL_Loss
@@ -30,8 +30,10 @@ import datetime
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='Visualize Transformer model inputs and outputs')
-parser.add_argument('--colab', action='store_true', 
+parser.add_argument('--colab', action='store_true',
                     help='Use Google Colab mode with GCS paths (requires authentication)')
+parser.add_argument('--local-data', action='store_true',
+                    help='Read TFRecords from ./local_data/ instead of the gcsfuse mount at ./data/')
 parser.add_argument('--model-path', type=str, default=None,
                     help='Path to model weights for visualization (optional)')
 parser.add_argument('--num-samples', type=int, default=1,
@@ -55,8 +57,13 @@ if args.colab:
     TRAINING_PATH = "gs://waymo_open_dataset_motion_v_1_2_1/uncompressed/tf_example/training/"
     VALIDATION_PATH = "gs://waymo_open_dataset_motion_v_1_2_1/uncompressed/tf_example/validation/"
     TESTING_PATH = "gs://waymo_open_dataset_motion_v_1_2_1/uncompressed/tf_example/testing/"
+elif args.local_data:
+    print("Running in local-data mode (./local_data/)")
+    TRAINING_PATH = "./local_data/training/"
+    VALIDATION_PATH = "./local_data/validation/"
+    TESTING_PATH = "./local_data/testing/"
 else:
-    print("Running in local mode")
+    print("Running in local mode (gcsfuse mount)")
     TRAINING_PATH = "./data/uncompressed/tf_example/training/"
     VALIDATION_PATH = "./data/uncompressed/tf_example/validation/"
     TESTING_PATH = "./data/uncompressed/tf_example/testing/"
@@ -118,7 +125,9 @@ print(f"Model has been initialized with {sum(p.numel() for p in model.parameters
 if args.model_path:
     if os.path.exists(args.model_path):
         print(f"\nLoading model weights from: {args.model_path}")
-        model.load_state_dict(torch.load(args.model_path, map_location=device))
+        ckpt = torch.load(args.model_path, map_location=device, weights_only=False)
+        state_dict = ckpt['model_state_dict'] if isinstance(ckpt, dict) and 'model_state_dict' in ckpt else ckpt
+        model.load_state_dict(state_dict)
         print("✓ Model weights loaded successfully")
     else:
         print(f"⚠ Warning: Model path not found: {args.model_path}")
@@ -187,6 +196,8 @@ with torch.no_grad():
             'agent_target_valid': agent_target_valid,
             'static_roadgraph_input': static_road,
             'static_roadgraph_valid': static_road_valid,
+            'dynamic_roadgraph_continuous': dyn_road_cont,
+            'dynamic_roadgraph_valid': dyn_road_valid,
             'is_sdc': is_sdc,
             'tracks_to_predict': tracks_to_predict,
         }

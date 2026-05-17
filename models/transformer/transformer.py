@@ -78,7 +78,8 @@ class Transformer_NN(nn.Module):
 
     def forward(self, agents_continuous, agents_categorical, agents_valid,
                 static_road, static_road_valid,
-                dynamic_road_continuous, dynamic_road_categorical, dynamic_road_valid):
+                dynamic_road_continuous, dynamic_road_categorical, dynamic_road_valid,
+                capture=False):
         batch_size = agents_continuous.size(0)
         num_agents = agents_continuous.size(1)
         num_dyn_rg = dynamic_road_continuous.size(1)
@@ -118,7 +119,8 @@ class Transformer_NN(nn.Module):
             static_rg_embedding,
             static_road_valid,
             dynamic_rg_embedding,
-            dynamic_road_valid
+            dynamic_road_valid,
+            capture=capture,
         )
 
         # Build decoder queries from ballistic prediction + per-mode learned offsets
@@ -139,6 +141,7 @@ class Transformer_NN(nn.Module):
             agents_valid,
             future_agents,
             future_agents_valid,
+            capture=capture,
         )
 
         # Prediction heads
