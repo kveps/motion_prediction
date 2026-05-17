@@ -38,6 +38,8 @@ parser.add_argument('--model-path', type=str, default=None,
                     help='Path to model weights for visualization (optional)')
 parser.add_argument('--num-samples', type=int, default=1,
                     help='Number of samples to visualize (default: 5)')
+parser.add_argument('--scene-idx', type=int, default=0,
+                    help='Skip N scenes from the loader before starting (default: 0).')
 parser.add_argument('--batch-size', type=int, default=1,
                     help='Batch size for visualization (default: 1)')
 parser.add_argument('--data-split', type=str, default='validation',
@@ -97,7 +99,16 @@ num_dynamic_roadgraph_continuous_features = dynamic_roadgraph_continuous.size(di
 num_past_timesteps = agent_input_continuous.size(dim=-2)
 num_future_features = agent_target.size(dim=-1)
 num_future_timesteps = agent_target.size(dim=-2)
+# Auto-detect K from the checkpoint's mode_queries.weight shape if provided,
+# otherwise default to K=1 for an un-trained model demo.
 num_future_trajectories = 1
+if args.model_path and os.path.exists(args.model_path):
+    _ckpt_peek = torch.load(args.model_path, map_location='cpu', weights_only=False)
+    _state = _ckpt_peek['model_state_dict'] if isinstance(_ckpt_peek, dict) and 'model_state_dict' in _ckpt_peek else _ckpt_peek
+    if 'mode_queries.weight' in _state:
+        num_future_trajectories = _state['mode_queries.weight'].shape[0]
+        print(f"  Detected K = {num_future_trajectories} from checkpoint")
+    del _ckpt_peek, _state
 num_model_features = 256
 categorical_embedding_dim = 16
 
@@ -151,7 +162,12 @@ print("Starting visualization of model inputs and outputs")
 print(f"{'='*60}\n")
 
 with torch.no_grad():
-    for batch_idx, dataset_element in enumerate(dataloader):
+    data_iter = iter(dataloader)
+    # Skip --scene-idx scenes so the viz starts at the same scene number used
+    # by visualize_model_attentions.py.
+    for _ in range(args.scene_idx):
+        next(data_iter)
+    for batch_idx, dataset_element in enumerate(data_iter):
         if batch_idx >= args.num_samples:
             break
         

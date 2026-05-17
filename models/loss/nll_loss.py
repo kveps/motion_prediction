@@ -2,6 +2,12 @@ import torch
 import torch.nn as nn
 
 
+# Diversity loss is bounded [0, 1] and decays fast (exp(-mean_dist)), while
+# min_ade contributes 5-10 in raw meters. Scale diversity up so it's comparable
+# to min_ade when modes are collapsed, encouraging differentiation.
+DIVERSITY_WEIGHT = 5.0
+
+
 class NLL_Loss(nn.Module):
     def __init__(self):
         super(NLL_Loss, self).__init__()
@@ -26,7 +32,7 @@ class NLL_Loss(nn.Module):
             self.min_ade_loss(ade_per_mode,
                               ground_truth_states_valid,
                               tracks_to_predict) +
-            self.diversity_Loss(predicted_trajectories,
+            DIVERSITY_WEIGHT * self.diversity_Loss(predicted_trajectories,
                                ground_truth_states_valid,
                                tracks_to_predict) +
             self.yaw_loss(predicted_trajectories,

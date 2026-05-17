@@ -6,7 +6,10 @@ from models.transformer.categorical_embedder import CategoricalEmbedder
 from models.transformer.context_encoder import ContextEncoder
 from models.transformer.positional_encoder import PositionalEncoder
 from models.transformer.prediction_decoder import PredictionDecoder
-from utils.model.engineered_predictions import ballistic_trajectories
+from utils.model.engineered_predictions import (
+    ballistic_trajectories,
+    mode_diverse_ballistic_endpoints,
+)
 
 
 class Transformer_NN(nn.Module):
@@ -123,13 +126,18 @@ class Transformer_NN(nn.Module):
             capture=capture,
         )
 
-        # Build decoder queries from ballistic prediction + per-mode learned offsets
-        # [batch, agents, T, 4] → endpoint [batch, agents, 2]
-        ballistic_endpoint = ballistic_trajectories(
-            agents_continuous, self.num_future_timesteps)[..., -1, :2]
-        ballistic_query = self.ballistic_encoder(ballistic_endpoint)
-        # [batch, agents, d_model] + [K, d_model] → [batch, agents, K, d_model]
-        future_agents = (ballistic_query.unsqueeze(2) +
+        # Build decoder queries from per-mode ballistic endpoints + learned offsets.
+        # Each of K modes uses a slightly different constant yaw rate, so the K
+        # query points are geometrically distinct even before learning kicks in.
+        # [batch, agents, K, 2]
+        ballistic_endpoints = mode_diverse_ballistic_endpoints(
+            agents_continuous, self.num_future_timesteps,
+            self.num_future_trajectories,
+        )
+        # [batch, agents, K, d_model]
+        ballistic_queries = self.ballistic_encoder(ballistic_endpoints)
+        # Add per-mode learnable offset on top of the geometric prior.
+        future_agents = (ballistic_queries +
                          self.mode_queries.weight.unsqueeze(0).unsqueeze(0))
         future_agents_valid = torch.ones(
             batch_size, num_agents, self.num_future_trajectories,
