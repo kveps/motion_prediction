@@ -19,7 +19,6 @@ from utils.data.motion_dataset import MotionDataset, PreprocessedMotionDataset
 from utils.model.endpoint_anchors import (
     ANCHOR_BALLISTIC,
     ANCHOR_CENTROID,
-    ANCHOR_HYBRID,
     VALID_ANCHOR_TYPES,
     compute_and_save_centroids,
     load_centroids,
@@ -36,9 +35,9 @@ import os
 # =========================================================================
 # DECODER ANCHOR CONFIG
 # =========================================================================
-# The decoder needs an initial 2D endpoint per (agent, mode). These three
-# options control where that anchor comes from. See
-# utils/model/endpoint_anchors.py for full implementations.
+# The decoder needs an initial 2D endpoint per (agent, mode). Two options
+# control where that anchor comes from. See utils/model/endpoint_anchors.py
+# for full implementations.
 #
 #   ANCHOR_BALLISTIC : K different yaw rates applied to each agent's
 #                      current state. Self-contained — no offline data.
@@ -49,17 +48,12 @@ import os
 #                      runtime. Same K maneuvers for every agent; provides
 #                      stable semantic mode identity. Requires CENTROIDS_PATH.
 #
-#   ANCHOR_HYBRID    : Per-agent constant-velocity ballistic endpoint +
-#                      per-mode centroid offset. Combines per-agent motion
-#                      with per-mode maneuver intent. Requires CENTROIDS_PATH.
-#
-# For CENTROID and HYBRID: if CENTROIDS_PATH does not exist, the script
-# computes the centroids from the training dataset on first run and saves
-# them.
+# For CENTROID: if CENTROIDS_PATH does not exist, the script computes the
+# centroids from the training dataset on first run and saves them.
 # =========================================================================
-ANCHOR_TYPE     = ANCHOR_HYBRID
+ANCHOR_TYPE     = ANCHOR_CENTROID
 NUM_MODES       = 6                    # K — decoder mode count. MTR uses 6.
-NUM_CENTROIDS   = 6                    # >= NUM_MODES. Only used by CENTROID/HYBRID.
+NUM_CENTROIDS   = 6                    # >= NUM_MODES. Only used by CENTROID.
 CENTROIDS_PATH  = './models/trained_weights/intention_centroids.pt'
 
 assert ANCHOR_TYPE in VALID_ANCHOR_TYPES
@@ -214,7 +208,7 @@ if __name__ == '__main__':
     # Centroid file: compute if missing (only when the selected anchor needs it)
     # =====================================================================
     centroids = None
-    if ANCHOR_TYPE in (ANCHOR_CENTROID, ANCHOR_HYBRID):
+    if ANCHOR_TYPE == ANCHOR_CENTROID:
         if args.test:
             # In test mode the training_dataset isn't loaded, so we can only
             # consume an existing centroid file.

@@ -45,7 +45,7 @@ class Transformer_NN(nn.Module):
         """
         Args:
             anchor_type: one of utils.model.endpoint_anchors.VALID_ANCHOR_TYPES.
-                BALLISTIC needs no extra data; CENTROID and HYBRID require
+                BALLISTIC needs no extra data; CENTROID requires
                 pre-computed `centroids`.
             centroids: [K_centroids, 2] tensor in agent-local frame, or None.
                 Stored as a non-trainable buffer when provided.

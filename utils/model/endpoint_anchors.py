@@ -6,7 +6,7 @@ those queries come from a 2D endpoint anchor that gets projected to d_model
 by the model's endpoint encoder.
 
 This module is the single source of truth for "where does each mode's anchor
-point come from?" Three sources are supported, all returning a
+point come from?" Two sources are supported, both returning a
 `[batch, agents, K, 2]` tensor of endpoints in SDC frame (the same frame the
 model operates in):
 
@@ -21,12 +21,8 @@ model operates in):
         and heading. Provides stable semantic mode identity; no per-agent
         motion context. Requires pre-computed centroids on disk.
 
-  - HYBRID:    Per-agent constant-velocity ballistic endpoint (same across
-        modes) PLUS per-mode centroid offset (different per mode). Combines
-        per-agent motion knowledge with per-mode maneuver intent.
-
 Run `compute_and_save_centroids(training_dataset, K, path)` once to produce
-the centroids file consumed by CENTROID and HYBRID.
+the centroids file consumed by CENTROID.
 """
 import os
 
@@ -39,9 +35,8 @@ import torch
 # ---------------------------------------------------------------------------
 ANCHOR_BALLISTIC = 'ballistic'
 ANCHOR_CENTROID  = 'centroid'
-ANCHOR_HYBRID    = 'hybrid'
 
-VALID_ANCHOR_TYPES = (ANCHOR_BALLISTIC, ANCHOR_CENTROID, ANCHOR_HYBRID)
+VALID_ANCHOR_TYPES = (ANCHOR_BALLISTIC, ANCHOR_CENTROID)
 
 # Default agent-feature indices in the SDC-frame agent_continuous tensor.
 # Layout: [x, y, sin_yaw, cos_yaw, vx, vy, sin_vel_yaw, cos_vel_yaw, length, width]
@@ -62,16 +57,16 @@ def get_mode_anchor_endpoints(anchor_type, agents_continuous,
     """Compute per-agent, per-mode endpoint anchor points in SDC frame.
 
     Args:
-        anchor_type: one of {ANCHOR_BALLISTIC, ANCHOR_CENTROID, ANCHOR_HYBRID}
+        anchor_type: one of {ANCHOR_BALLISTIC, ANCHOR_CENTROID}.
         agents_continuous: [batch, agents, T_past, num_features] in SDC frame.
             Expects feature layout
             [x, y, sin_yaw, cos_yaw, vx, vy, ...]. Only the last past timestep
             is used to seed the anchor.
-        num_future_timesteps: prediction horizon (used by ballistic / hybrid
-            to project forward).
+        num_future_timesteps: prediction horizon (used by ballistic to
+            project forward).
         num_modes: K — number of trajectory modes.
         centroids: [K_centroids, 2] cluster centers in agent-local frame
-            ([forward, left] meters). Required for CENTROID and HYBRID.
+            ([forward, left] meters). Required for CENTROID.
         max_yaw_rate: max |omega| in rad/s for the BALLISTIC mode.
         dt: timestep in seconds (default 0.1 for 10 Hz Waymo data).
 
@@ -85,10 +80,6 @@ def get_mode_anchor_endpoints(anchor_type, agents_continuous,
     if anchor_type == ANCHOR_CENTROID:
         _require_centroids(centroids, anchor_type, num_modes)
         return _centroid_anchor(agents_continuous, centroids, num_modes)
-    if anchor_type == ANCHOR_HYBRID:
-        _require_centroids(centroids, anchor_type, num_modes)
-        return _hybrid_anchor(agents_continuous, centroids,
-                              num_future_timesteps, num_modes, dt)
     raise ValueError(
         f"Unknown anchor_type={anchor_type!r}. "
         f"Expected one of {VALID_ANCHOR_TYPES}.")
@@ -183,47 +174,6 @@ def _centroid_anchor(agents_continuous, centroids, num_modes):
     rotated   = _rotate_agent_local_to_sdc(centroids_kf, sin_h, cos_h)  # [B, A, K, 2]
     translated = _translate_to_position(rotated, x0, y0)                 # [B, A, K, 2]
     return translated
-
-
-def _hybrid_anchor(agents_continuous, centroids, num_future_timesteps,
-                   num_modes, dt):
-    """Per-agent constant-velocity endpoint + per-mode centroid offset.
-
-    The per-agent term is "where the agent would end up if it just kept going
-    straight at its current velocity." The per-mode term is the centroid
-    offset (in agent-local frame, rotated to SDC frame) added on top.
-
-    K different endpoints per agent, all sharing the agent's forward motion
-    but differing by the K typical maneuver offsets.
-    """
-    K = num_modes
-    centroids_kf = centroids[:K]  # [K, 2] in agent-local frame
-
-    x0    = agents_continuous[..., -1, _IDX_X]
-    y0    = agents_continuous[..., -1, _IDX_Y]
-    sin_h = agents_continuous[..., -1, _IDX_SIN_H]
-    cos_h = agents_continuous[..., -1, _IDX_COS_H]
-    vx    = agents_continuous[..., -1, _IDX_VX]
-    vy    = agents_continuous[..., -1, _IDX_VY]
-
-    total_t = num_future_timesteps * dt
-
-    # Per-agent forward bias in SDC frame (constant velocity). [B, A, 2].
-    forward_x = x0 + vx * total_t
-    forward_y = y0 + vy * total_t
-
-    # Per-mode centroid offset rotated to SDC frame. [B, A, K, 2].
-    centroid_offset_sdc = _rotate_agent_local_to_sdc(centroids_kf, sin_h, cos_h)
-
-    # Broadcast-add: per-agent forward [B, A, 1, 2] + per-mode offset [B, A, K, 2].
-    fx = forward_x.unsqueeze(-1).unsqueeze(-1)  # [B, A, 1, 1]
-    fy = forward_y.unsqueeze(-1).unsqueeze(-1)  # [B, A, 1, 1]
-    forward_xy = torch.cat([
-        fx.expand(*forward_x.shape, K, 1),
-        fy.expand(*forward_y.shape, K, 1),
-    ], dim=-1)  # [B, A, K, 2]
-
-    return forward_xy + centroid_offset_sdc
 
 
 # ===========================================================================
