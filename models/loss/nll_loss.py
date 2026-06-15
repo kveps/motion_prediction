@@ -1,11 +1,13 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
-# Diversity loss is bounded [0, 1] and decays fast (exp(-mean_dist)), while
-# min_ade contributes 5-10 in raw meters. Scale diversity up so it's comparable
-# to min_ade when modes are collapsed, encouraging differentiation.
-DIVERSITY_WEIGHT = 5.0
+# Diversity hinge: penalize until the average pairwise inter-mode distance
+# (in meters of trajectory displacement) reaches this target, then stop.
+# 8m is a reasonable middle ground for an 8s horizon at urban speeds —
+# adjust based on what trajectory visualizations show.
+DIVERSITY_DISTANCE_M = 8.0
 
 
 class NLL_Loss(nn.Module):
@@ -32,9 +34,9 @@ class NLL_Loss(nn.Module):
             self.min_ade_loss(ade_per_mode,
                               ground_truth_states_valid,
                               tracks_to_predict) +
-            DIVERSITY_WEIGHT * self.diversity_Loss(predicted_trajectories,
-                               ground_truth_states_valid,
-                               tracks_to_predict) +
+            self.diversity_Loss(predicted_trajectories,
+                                ground_truth_states_valid,
+                                tracks_to_predict) +
             self.yaw_loss(predicted_trajectories,
                           ground_truth_trajectory,
                           ade_per_mode,
@@ -136,47 +138,41 @@ class NLL_Loss(nn.Module):
         return min_ade_loss
 
     def diversity_Loss(self, predicted_trajectories, ground_truth_states_valid, tracks_to_predict):
-        """
-        Encourages diversity by penalizing similar trajectories.
-        Only computes loss for valid timesteps and predicted tracks.
+        """Hinge penalty on pairwise mode separation.
+
+        For each pair of modes, computes the mean trajectory displacement
+        between them (over valid timesteps and predicted agents). Penalty is
+        relu(DIVERSITY_DISTANCE_M - mean_dist): constant gradient pushing
+        modes apart until they are at least DIVERSITY_DISTANCE_M meters
+        apart, then zero — the loss stops opining once satisfied.
 
         Args:
-            predicted_trajectories: (batch_size, num_agents, num_trajectories, timesteps, 3)
-            ground_truth_states_valid: [batch_size, num_agents, num_timesteps] 
-            storing validity information for each state.
-            tracks_to_predict: [batch_size, num_agents] boolean mask for agents to predict.
+            predicted_trajectories: [batch, agents, num_trajectories, T, >=2]
+            ground_truth_states_valid: [batch, agents, T]
+            tracks_to_predict: [batch, agents] boolean mask
         """
         num_trajs = predicted_trajectories.size(dim=-3)
-        diversity_loss = 0.0
-
         if num_trajs < 2:
-            return diversity_loss
+            return torch.tensor(0.0, device=predicted_trajectories.device)
 
+        agent_mask = tracks_to_predict.bool().unsqueeze(-1)  # [B, A, 1]
+        valid_count = (ground_truth_states_valid * agent_mask).sum()
+        if valid_count == 0:
+            return torch.tensor(0.0, device=predicted_trajectories.device)
+
+        diversity_loss = torch.tensor(0.0, device=predicted_trajectories.device)
         for i in range(num_trajs):
             for j in range(i + 1, num_trajs):
-                # Compute pairwise distances
-                # [batch_size, num_agents, num_timesteps]
+                # [B, A, T] pairwise distance between mode i and mode j
                 pairwise_dist = torch.norm(
                     predicted_trajectories[..., i, :, :2] -
                     predicted_trajectories[..., j, :, :2], dim=-1)
-                
-                # Mask out invalid timesteps and non-predicted tracks
-                # [batch_size, num_agents, num_timesteps]
-                masked_dist = pairwise_dist * ground_truth_states_valid
-                # [batch_size, num_agents, 1]
-                agent_mask = tracks_to_predict.bool().unsqueeze(-1)
-                masked_dist = masked_dist * agent_mask
-                
-                # Compute mean only over valid timesteps and agents
-                valid_count = (ground_truth_states_valid * agent_mask).sum()
-                if valid_count > 0:
-                    mean_dist = masked_dist.sum() / valid_count
-                    # Penalize trajectories that are too close
-                    diversity_loss += torch.exp(-mean_dist)
+                masked_dist = pairwise_dist * ground_truth_states_valid * agent_mask
+                mean_dist = masked_dist.sum() / valid_count
+                diversity_loss = diversity_loss + F.relu(DIVERSITY_DISTANCE_M - mean_dist)
 
-        if num_trajs >= 2:
-            diversity_loss /= (num_trajs * (num_trajs - 1)) / 2  # Normalize over number of pairs
-
+        # Average over pairs so loss magnitude does not scale with K^2.
+        diversity_loss = diversity_loss / ((num_trajs * (num_trajs - 1)) / 2)
         return diversity_loss
 
     def yaw_loss(self, predicted_trajectories, ground_truth_trajectory,
