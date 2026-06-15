@@ -2,245 +2,183 @@ import torch.nn as nn
 from models.transformer.attention import (
     MultiHeadAttention,
     MultiHeadCrossAttention,
+    self_attn_capture,
+    cross_attn_capture,
 )
 from models.transformer.feed_forward import FeedForward
 from models.transformer.layer_norm import LayerNorm
 
 
 def _create_agent_agent_attention_mask(agents, agents_valid):
+    """Outer-product masks for time-axis and agent-axis self-attention.
+
+    A (query, key) pair is unmasked iff both endpoints are valid.
+
+    Returns:
+        time_mask:  [B*A, T, T]  per (batch, agent): T queries x T keys
+        agent_mask: [B*T, A, A]  per (batch, timestep): A queries x A keys
+    """
     batch_size, num_agents, num_timesteps, _ = agents.size()
     device = agents.device
 
-    # Outer-product masks: position (q, k) is unmasked iff BOTH q and k are valid.
-
-    # Time mask: per (batch, agent), T_query x T_key
     time_v = agents_valid.reshape(batch_size * num_agents, num_timesteps).to(device)
-    time_attention_mask = time_v.unsqueeze(-1) * time_v.unsqueeze(-2)
+    time_mask = time_v.unsqueeze(-1) * time_v.unsqueeze(-2)
 
-    # Agent mask: per (batch, timestep), A_query x A_key
     agent_v = agents_valid.swapaxes(1, 2).reshape(
         batch_size * num_timesteps, num_agents).to(device)
-    agent_attention_mask = agent_v.unsqueeze(-1) * agent_v.unsqueeze(-2)
+    agent_mask = agent_v.unsqueeze(-1) * agent_v.unsqueeze(-2)
 
-    return time_attention_mask, agent_attention_mask
+    return time_mask, agent_mask
 
 
 def _create_agent_static_road_attention_mask(agents, agents_valid,
                                              static_road, static_road_valid):
+    """Cross-attention mask: per (batch, timestep), A agents x P static polylines.
+
+    A polyline is considered valid if any of its points is valid (we max-pool
+    points in pointnet, so a single valid point can carry information).
+    """
     batch_size, num_agents, num_timesteps, _ = agents.size()
     _, num_static_rg, _, _ = static_road.size()
-    # Ensure mask is on the same device as agents
     device = agents.device
-    
-    # Max ensures that even if one polyline point is valid, the whole polyline
-    # is valid. This might be okay since we max pool in the points dimension
-    #  in pointnet.
-    # [batch_size, num_static_rg]
-    static_road_mask = static_road_valid.amax(-1)
-    # [batch_size, num_timesteps, num_static_rg]
-    static_road_mask = static_road_mask.unsqueeze(1).repeat(
-        1, num_timesteps, 1
-    )
-    # [batch_size*num_timesteps, num_static_rg]
-    static_road_mask = static_road_mask.reshape(
-        batch_size*num_timesteps, num_static_rg)
-    # [batch_size*num_timesteps, num_agents, num_static_rg]
-    static_road_mask = static_road_mask.unsqueeze(1).repeat(
-        1, num_agents, 1)
-    # [batch_size*num_timesteps, num_agents]
-    agent_mask = agents_valid.swapaxes(1, 2).reshape(
-        batch_size*num_timesteps, num_agents)
-    # [batch_size*num_timesteps, num_agents, num_static_rg]
-    agent_mask = agent_mask.unsqueeze(-1).repeat(
-        1, 1, num_static_rg)
-    # [batch_size*num_timesteps, num_static_rg, num_agents]
-    static_road_agent_mask = (static_road_mask * agent_mask).to(device)
 
-    return static_road_agent_mask
+    # [B, P] — polyline valid if any point is valid
+    polyline_v = static_road_valid.amax(-1)
+    # [B*T, P]
+    polyline_v = polyline_v.unsqueeze(1).repeat(1, num_timesteps, 1).reshape(
+        batch_size * num_timesteps, num_static_rg)
+    # [B*T, A]
+    agent_v = agents_valid.swapaxes(1, 2).reshape(
+        batch_size * num_timesteps, num_agents)
+    # [B*T, A, P] = outer product
+    mask = agent_v.unsqueeze(-1) * polyline_v.unsqueeze(-2)
+    return mask.to(device)
 
 
 def _create_agent_dynamic_road_attention_mask(agents, agents_valid,
-                                              dynamic_road,
-                                              dynamic_road_valid):
+                                              dynamic_road, dynamic_road_valid):
+    """Cross-attention mask: per (batch, timestep), A agents x D dynamic objects."""
     batch_size, num_agents, num_timesteps, _ = agents.size()
     _, num_dynamic_rg, _, _ = dynamic_road.size()
-    # Ensure mask is on the same device as agents
     device = agents.device
-    
-    # Create a mask for dynamic road and agents
-    # [batch_size*num_timesteps, num_dynamic_rg]
-    dynamic_road_mask = dynamic_road_valid.swapaxes(1, 2).reshape(
-        batch_size*num_timesteps, num_dynamic_rg)
-    # [batch_size*num_timesteps, num_agents, num_dynamic_rg]
-    dynamic_road_mask = dynamic_road_mask.unsqueeze(1).repeat(
-        1, num_agents, 1)
-    # [batch_size*num_timesteps, num_agents]
-    agent_mask = agents_valid.swapaxes(1, 2).reshape(
-        batch_size*num_timesteps, num_agents)
-    # [batch_size*num_timesteps, num_agents, num_dynamic_rg]
-    agent_mask = agent_mask.unsqueeze(2).repeat(
-        1, 1, num_dynamic_rg)
-    # [batch_size*num_timesteps, num_dynamic_rg, num_agents]
-    dynamic_road_agent_mask = (dynamic_road_mask * agent_mask).to(device)
 
-    return dynamic_road_agent_mask
+    # [B*T, D]
+    dyn_v = dynamic_road_valid.swapaxes(1, 2).reshape(
+        batch_size * num_timesteps, num_dynamic_rg)
+    # [B*T, A]
+    agent_v = agents_valid.swapaxes(1, 2).reshape(
+        batch_size * num_timesteps, num_agents)
+    # [B*T, A, D]
+    mask = agent_v.unsqueeze(-1) * dyn_v.unsqueeze(-2)
+    return mask.to(device)
 
 
 class EncoderLayer(nn.Module):
+    """Single context-encoder layer.
+
+    Five sub-layers, each followed by its own residual + LayerNorm:
+      1. Time-axis self-attention   (per agent, attend across T past steps)
+      2. Agent-axis self-attention  (per timestep, agents attend to each other)
+      3. Cross-attention to static road polylines
+      4. Cross-attention to dynamic road objects (traffic lights, etc.)
+      5. Position-wise feed-forward network
+
+    Each sub-layer has its own dedicated attention module — no weight sharing
+    across axes or modalities, since each axis has different statistical
+    structure and needs its own learned weights.
+    """
+
     def __init__(self, d_model, ffn_hidden, num_heads, drop_prob):
-        super(EncoderLayer, self).__init__()
-        self.self_attention = MultiHeadAttention(
-            d_model=d_model, num_heads=num_heads)
-        self.cross_attention = MultiHeadCrossAttention(
-            d_model=d_model, num_heads=num_heads
-        )
-        self.norm1 = LayerNorm()
-        self.dropout1 = nn.Dropout(p=drop_prob)
-        self.ffn = FeedForward(
-            d_model=d_model, hidden=ffn_hidden, drop_prob=drop_prob)
-        self.norm2 = LayerNorm()
-        self.dropout2 = nn.Dropout(p=drop_prob)
+        super().__init__()
+        # Separate attention modules per factored axis / per map modality.
+        self.time_self_attention   = MultiHeadAttention(d_model=d_model, num_heads=num_heads)
+        self.agent_self_attention  = MultiHeadAttention(d_model=d_model, num_heads=num_heads)
+        self.static_road_cross_attention  = MultiHeadCrossAttention(d_model=d_model, num_heads=num_heads)
+        self.dynamic_road_cross_attention = MultiHeadCrossAttention(d_model=d_model, num_heads=num_heads)
+
+        self.ffn = FeedForward(d_model=d_model, hidden=ffn_hidden, drop_prob=drop_prob)
+
+        # One LayerNorm per sub-layer keeps activation magnitudes bounded
+        # between sub-ops, so residual contributions are not numerically
+        # swamped by upstream activation blow-ups.
+        self.norm_time   = LayerNorm()
+        self.norm_agent  = LayerNorm()
+        self.norm_static = LayerNorm()
+        self.norm_dyn    = LayerNorm()
+        self.norm_ffn    = LayerNorm()
+
+        self.dropout = nn.Dropout(p=drop_prob)
+
         self.captured = {}
 
-    def forward(self, agents, agents_valid, static_road,
-                static_road_valid, dynamic_road, dynamic_road_valid,
-                capture=False):
+    def forward(self, agents, agents_valid, static_road, static_road_valid,
+                dynamic_road, dynamic_road_valid, capture=False):
         if capture:
             self.captured = {}
+        captured = self.captured if capture else None
 
-        # [batch_size, num_agents, num_timesteps, d_model]
-        residual_agents = agents.clone()
+        B, A, T, D = agents.size()
+        P_static = static_road.size(1)
+        P_dyn = dynamic_road.size(1)
 
-        # Agent self attention
-        #
-        # Self attention on agents separately along the timestamp axis and
-        # then the agents axis
-        batch_size, num_agents, num_timesteps, _ = agents.size()
-        time_attention_mask, agent_attention_mask = _create_agent_agent_attention_mask(
-            agents, agents_valid
-        )
-        # Time attention on agents
-        time_attention = agents.reshape(
-            batch_size * num_agents, num_timesteps, -1)
-        # [batch_size*num_agents, num_timesteps, d_model]
-        if capture:
-            agents, time_self_attn = self.self_attention(
-                time_attention, mask=time_attention_mask, return_attention=True)
-            # [batch*A, h, T, T] -> [batch, A, h, T, T]
-            self.captured["time_self"] = time_self_attn.reshape(
-                batch_size, num_agents, *time_self_attn.shape[1:]
-            ).detach()
-        else:
-            agents = self.self_attention(time_attention, mask=time_attention_mask)
-        # Reshape agents back
-        # [batch_size, num_agents, num_timesteps, d_model]
-        agents = agents.reshape(
-            batch_size, num_agents, num_timesteps, -1
-        )
-        # Agent attention on agents
-        # [batch_size*num_timesteps, num_agents,d_model]
-        agent_attenion = agents.swapaxes(1, 2).reshape(
-            batch_size*num_timesteps, num_agents, -1)
-        if capture:
-            agents, agent_self_attn = self.self_attention(
-                agent_attenion, mask=agent_attention_mask, return_attention=True)
-            # [batch*T, h, A, A] -> [batch, T, h, A, A]
-            self.captured["agent_self"] = agent_self_attn.reshape(
-                batch_size, num_timesteps, *agent_self_attn.shape[1:]
-            ).detach()
-        else:
-            agents = self.self_attention(agent_attenion, mask=agent_attention_mask)
-        # Reshape agents back
-        # [batch_size, num_agents, num_timesteps, d_model]
-        agents = agents.reshape(
-            batch_size, num_timesteps, num_agents, -1).swapaxes(1, 2)
-
-        # Cross attention on agents and static road
-        #
-        _, num_static_rg, _, _ = static_road.size()
-        # Create a mask for static road and agents
-        # [batch_size, num_timesteps, num_static_rg]
-        static_road_agent_mask = _create_agent_static_road_attention_mask(
+        time_mask, agent_mask = _create_agent_agent_attention_mask(agents, agents_valid)
+        static_mask = _create_agent_static_road_attention_mask(
             agents, agents_valid, static_road, static_road_valid)
-        # [batch_size*num_timesteps, num_static_rg, d_model]
-        static_road = static_road.swapaxes(1, 2).reshape(
-            batch_size*num_timesteps, num_static_rg, -1
-        )
-        # [batch_size*num_timesteps, num_agents, d_model]
-        agents = agents.swapaxes(1, 2).reshape(
-            batch_size*num_timesteps, num_agents, -1)
-        # [batch_size*num_timesteps, num_agents, d_model]
-        if capture:
-            agents, road_attn = self.cross_attention(
-                static_road, agents, mask=static_road_agent_mask, return_attention=True)
-            # [batch*T, h, A, P] -> [batch, T, h, A, P]
-            self.captured["agent_static_road"] = road_attn.reshape(
-                batch_size, num_timesteps, *road_attn.shape[1:]
-            ).detach()
-        else:
-            agents = self.cross_attention(
-                static_road, agents, mask=static_road_agent_mask)
-        # Reshape agents back
-        # [batch_size, num_agents, num_timesteps, d_model]
-        agents = agents.reshape(
-            batch_size, num_timesteps, num_agents, -1
-        ).swapaxes(1, 2)
-
-        # Cross attention on agents and dynamic road
-        #
-        _, num_dynamic_rg, _, _ = dynamic_road.size()
-        # Create a mask for dynamic road and agents
-        # [batch_size*num_timesteps, num_dynamic_rg]
-        dynamic_road_agent_mask = _create_agent_dynamic_road_attention_mask(
+        dyn_mask = _create_agent_dynamic_road_attention_mask(
             agents, agents_valid, dynamic_road, dynamic_road_valid)
-        # [batch_size*num_timesteps, num_dynamic_rg, d_model]
-        dynamic_road = dynamic_road.swapaxes(1, 2).reshape(
-            batch_size*num_timesteps, num_dynamic_rg, -1
-        )
-        # [batch_size*num_timesteps, num_agents, d_model]
-        agents = agents.swapaxes(1, 2).reshape(
-            batch_size*num_timesteps, num_agents, -1)
-        # [batch_size*num_timesteps, num_agents, d_model]
-        if capture:
-            agents, dyn_attn = self.cross_attention(
-                dynamic_road, agents, mask=dynamic_road_agent_mask, return_attention=True)
-            # [batch*T, h, A, D] -> [batch, T, h, A, D]
-            self.captured["agent_dynamic_road"] = dyn_attn.reshape(
-                batch_size, num_timesteps, *dyn_attn.shape[1:]
-            ).detach()
-        else:
-            agents = self.cross_attention(
-                dynamic_road, agents, mask=dynamic_road_agent_mask)
-        # Reshape agents back
-        # [batch_size, num_agents, num_timesteps, d_model]
-        agents = agents.reshape(
-            batch_size, num_timesteps, num_agents, -1
-        ).swapaxes(1, 2)
 
-        # [batch_size, num_agents, num_timesteps, d_model]
-        agents = self.dropout1(agents)
-        agents = self.norm1(agents + residual_agents)
+        # ---- Sub-layer 1: time-axis self-attention ----
+        residual = agents
+        x = agents.reshape(B * A, T, D)
+        x = self_attn_capture(self.time_self_attention, x, time_mask,
+                              captured, "time_self", B, A)
+        agents = self.norm_time(
+            self.dropout(x.reshape(B, A, T, D)) + residual)
 
-        # [batch_size, num_agents, num_timesteps, d_model]
-        residual_agents = agents.clone()
-        agents = self.ffn(agents)
-        agents = self.dropout2(agents)
-        agents = self.norm2(agents + residual_agents)
+        # ---- Sub-layer 2: agent-axis self-attention ----
+        residual = agents
+        x = agents.swapaxes(1, 2).reshape(B * T, A, D)
+        x = self_attn_capture(self.agent_self_attention, x, agent_mask,
+                              captured, "agent_self", B, T)
+        agents = self.norm_agent(
+            self.dropout(x.reshape(B, T, A, D).swapaxes(1, 2)) + residual)
+
+        # ---- Sub-layer 3: cross-attention to static road polylines ----
+        residual = agents
+        kv = static_road.swapaxes(1, 2).reshape(B * T, P_static, D)
+        q = agents.swapaxes(1, 2).reshape(B * T, A, D)
+        x = cross_attn_capture(self.static_road_cross_attention, kv, q, static_mask,
+                               captured, "agent_static_road", B, T)
+        agents = self.norm_static(
+            self.dropout(x.reshape(B, T, A, D).swapaxes(1, 2)) + residual)
+
+        # ---- Sub-layer 4: cross-attention to dynamic road objects ----
+        residual = agents
+        kv = dynamic_road.swapaxes(1, 2).reshape(B * T, P_dyn, D)
+        q = agents.swapaxes(1, 2).reshape(B * T, A, D)
+        x = cross_attn_capture(self.dynamic_road_cross_attention, kv, q, dyn_mask,
+                               captured, "agent_dynamic_road", B, T)
+        agents = self.norm_dyn(
+            self.dropout(x.reshape(B, T, A, D).swapaxes(1, 2)) + residual)
+
+        # ---- Sub-layer 5: position-wise feed-forward ----
+        residual = agents
+        agents = self.norm_ffn(self.dropout(self.ffn(agents)) + residual)
 
         return agents
 
 
 class ContextEncoder(nn.Module):
     def __init__(self, num_layers, d_model, ffn_hidden, num_heads, drop_prob):
-        super(ContextEncoder, self).__init__()
-        self.layers = nn.ModuleList([EncoderLayer(
-            d_model, ffn_hidden, num_heads, drop_prob)
-            for _ in range(num_layers)])
+        super().__init__()
+        self.layers = nn.ModuleList([
+            EncoderLayer(d_model, ffn_hidden, num_heads, drop_prob)
+            for _ in range(num_layers)
+        ])
 
     def forward(self, agents, agents_mask, static_road, static_road_mask,
                 dynamic_road, dynamic_road_mask, capture=False):
         for layer in self.layers:
-            agents = layer(agents, agents_mask, static_road,
-                           static_road_mask, dynamic_road, dynamic_road_mask,
-                           capture=capture)
+            agents = layer(agents, agents_mask, static_road, static_road_mask,
+                           dynamic_road, dynamic_road_mask, capture=capture)
         return agents

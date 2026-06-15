@@ -3,6 +3,34 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def self_attn_capture(module, x, mask, captured, key, batch_size, lead_dim):
+    """Run self-attention, optionally recording the attention map.
+
+    `captured` is either a mutable dict (record) or None (skip). When recording,
+    the stored tensor has shape [batch_size, lead_dim, num_heads, ...] so the
+    leading batch×group dim of the attention call is unflattened.
+    """
+    if captured is None:
+        return module(x, mask=mask)
+    out, attn = module(x, mask=mask, return_attention=True)
+    captured[key] = attn.reshape(
+        batch_size, lead_dim, *attn.shape[1:]).detach()
+    return out
+
+
+def cross_attn_capture(module, kv, q, mask, captured, key, batch_size, lead_dim):
+    """Run cross-attention, optionally recording the attention map.
+
+    Same capture convention as self_attn_capture.
+    """
+    if captured is None:
+        return module(kv, q, mask=mask)
+    out, attn = module(kv, q, mask=mask, return_attention=True)
+    captured[key] = attn.reshape(
+        batch_size, lead_dim, *attn.shape[1:]).detach()
+    return out
+
+
 def scaled_dot_product(q, k, v, mask=None):
     # k, v are of size [batch, num_heads, num_attending_inputs_kv, d_head]
     # q is of size [batch, num_heads, num_attending_inputs_q, d_head]

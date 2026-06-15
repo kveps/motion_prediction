@@ -1,156 +1,128 @@
-import torch
 import torch.nn as nn
 from models.transformer.attention import (
     MultiHeadAttention,
     MultiHeadCrossAttention,
+    self_attn_capture,
+    cross_attn_capture,
 )
 from models.transformer.feed_forward import FeedForward
 from models.transformer.layer_norm import LayerNorm
 
 
 def _create_future_agent_agent_attention_mask(future_agents, future_agents_valid):
+    """Outer-product mask: per (batch, mode), A queries x A keys.
+
+    (q, k) is unmasked iff both endpoints are valid.
+    """
     batch_size, num_agents, num_future_trajectories, _ = future_agents.size()
     device = future_agents.device
-
-    # Outer-product mask: (q, k) unmasked iff both endpoints are valid.
-    # Agent mask: per (batch, trajectory), A_query x A_key
     agent_v = future_agents_valid.swapaxes(1, 2).reshape(
         batch_size * num_future_trajectories, num_agents).to(device)
     return agent_v.unsqueeze(-1) * agent_v.unsqueeze(-2)
+
 
 def _create_encoded_agent_future_agent_attention_mask(encoded_agents,
                                                       encoded_agents_valid,
                                                       future_agents,
                                                       future_agents_valid):
+    """Cross-attention mask: per (batch, agent), K mode queries x T_past keys.
+
+    (q=mode, k=past_step) is unmasked iff both the agent's future is valid
+    for that mode (always true here) and the agent's past at that timestep
+    is valid.
+    """
     batch_size, num_agents, num_encoded_timesteps, _ = encoded_agents.size()
     num_future_trajectories = future_agents.size(2)
-    # Ensure mask is on the same device as future_agents
     device = future_agents.device
-    
-    # [batch_size*num_agents, num_future_trajectories, num_encoded_timesteps]
-    encoded_agents_mask = encoded_agents_valid.reshape(
-        batch_size*num_agents, num_encoded_timesteps).unsqueeze(-2).repeat(
-            1, num_future_trajectories, 1
-        )
-    # [batch_size*num_agents, num_future_trajectories]
-    future_agents_mask = future_agents_valid.reshape(
-        batch_size*num_agents, num_future_trajectories)
-    # [batch_size*num_agents, num_future_trajectories, num_encoded_timesteps]
-    future_agents_mask = future_agents_mask.unsqueeze(-1).repeat(
-        1, 1, num_encoded_timesteps
-    )
 
-    # [batch_size*num_agents, num_future_trajectories, num_encoded_timesteps]
-    return (encoded_agents_mask * future_agents_mask).to(device)
+    # [B*A, T_past]
+    past_v = encoded_agents_valid.reshape(
+        batch_size * num_agents, num_encoded_timesteps)
+    # [B*A, K]
+    future_v = future_agents_valid.reshape(
+        batch_size * num_agents, num_future_trajectories)
+    # [B*A, K, T_past]
+    mask = future_v.unsqueeze(-1) * past_v.unsqueeze(-2)
+    return mask.to(device)
 
 
 class DecoderLayer(nn.Module):
+    """Single prediction-decoder layer.
+
+    Three sub-layers, each followed by its own residual + LayerNorm:
+      1. Agent-axis self-attention  (per mode, future agents attend to each other)
+      2. Cross-attention to encoded past (per (agent, mode) query, attend over past steps)
+      3. Position-wise feed-forward network
+
+    Note: mode self-attention was deliberately removed. It collapsed the K
+    mode tokens to identical vectors by averaging, and standard motion
+    prediction architectures (MTR, Wayformer, Scene Transformer) do not use
+    it — K modes interact only through the loss.
+    """
+
     def __init__(self, d_model, ffn_hidden, num_heads, drop_prob):
-        super(DecoderLayer, self).__init__()
-        self.self_attention = MultiHeadAttention(
-            d_model=d_model, num_heads=num_heads)
-        self.norm1 = LayerNorm()
-        self.dropout1 = nn.Dropout(p=drop_prob)
-        self.cross_attention = MultiHeadCrossAttention(
-            d_model=d_model, num_heads=num_heads)
-        self.norm2 = LayerNorm()
-        self.dropout2 = nn.Dropout(p=drop_prob)
-        self.ffn = FeedForward(
-            d_model=d_model, hidden=ffn_hidden, drop_prob=drop_prob)
-        self.norm3 = LayerNorm()
-        self.dropout3 = nn.Dropout(p=drop_prob)
+        super().__init__()
+        self.agent_self_attention = MultiHeadAttention(d_model=d_model, num_heads=num_heads)
+        self.past_cross_attention = MultiHeadCrossAttention(d_model=d_model, num_heads=num_heads)
+        self.ffn = FeedForward(d_model=d_model, hidden=ffn_hidden, drop_prob=drop_prob)
+
+        self.norm_agent = LayerNorm()
+        self.norm_past  = LayerNorm()
+        self.norm_ffn   = LayerNorm()
+
+        self.dropout = nn.Dropout(p=drop_prob)
+
         self.captured = {}
 
     def forward(self, encoded_agents, encoded_agents_valid,
                 future_agents, future_agents_valid, capture=False):
         if capture:
             self.captured = {}
+        captured = self.captured if capture else None
 
-        # [batch_size, num_agents, num_future_timesteps, d_model]
-        residual_future_agents = future_agents.clone()
+        B, A, K, D = future_agents.size()
+        T_past = encoded_agents.size(2)
 
-        # Future agent self-attention along the agent (A) axis.
-        # Modes are independent here — each of the K modes runs its own
-        # self-attention over the A agents. We deliberately do NOT run a
-        # second self-attention along the K axis: mode self-attention
-        # averages the K tokens (collapse-by-averaging) and is not used
-        # in MTR / Wayformer / Scene Transformer either.
-        batch_size, num_agents, num_future_trajectories, _ = future_agents.size()
-        future_agent_attention_mask = _create_future_agent_agent_attention_mask(
-            future_agents, future_agents_valid
-        )
-        # [batch_size*num_future_trajectories, num_agents, d_model]
-        future_agent_attention = future_agents.swapaxes(1, 2).reshape(
-            batch_size*num_future_trajectories, num_agents, -1)
-        if capture:
-            future_agents, agent_self_attn = self.self_attention(
-                future_agent_attention, mask=future_agent_attention_mask, return_attention=True)
-            # [batch*K, h, A, A] -> [batch, K, h, A, A]
-            self.captured["agent_self"] = agent_self_attn.reshape(
-                batch_size, num_future_trajectories, *agent_self_attn.shape[1:]
-            ).detach()
-        else:
-            future_agents = self.self_attention(
-                future_agent_attention, mask=future_agent_attention_mask)
-        # [batch_size, num_agents, num_future_trajectories, d_model]
-        future_agents = future_agents.reshape(
-            batch_size, num_future_trajectories, num_agents, -1).swapaxes(1, 2)
-
-        future_agents = self.dropout1(future_agents)
-        future_agents = self.norm1(future_agents + residual_future_agents)
-        residual_future_agents = future_agents.clone()
-
-        # Cross attention on future agents and past agents
-        #
-        _, _, num_encoded_timesteps, _ = encoded_agents.size()
-        encoded_future_attention_mask = _create_encoded_agent_future_agent_attention_mask(
+        agent_mask = _create_future_agent_agent_attention_mask(
+            future_agents, future_agents_valid)
+        past_mask = _create_encoded_agent_future_agent_attention_mask(
             encoded_agents, encoded_agents_valid,
-            future_agents, future_agents_valid,
-        )
-        # [batch_size*num_agents, num_encoded_timesteps, d_model]
-        encoded_agents = encoded_agents.reshape(
-            batch_size*num_agents, num_encoded_timesteps, -1)
-        # [batch_size*num_agents, num_future_trajectories, d_model]
-        future_agents = future_agents.reshape(
-            batch_size*num_agents, num_future_trajectories, -1)
-        # [batch_size*num_agents, num_future_trajectories, d_model]
-        if capture:
-            future_agents, mode_past_attn = self.cross_attention(
-                encoded_agents, future_agents, mask=encoded_future_attention_mask, return_attention=True)
-            # [batch*A, h, K, T] -> [batch, A, h, K, T]
-            self.captured["mode_past"] = mode_past_attn.reshape(
-                batch_size, num_agents, *mode_past_attn.shape[1:]
-            ).detach()
-        else:
-            future_agents = self.cross_attention(
-                encoded_agents, future_agents, mask=encoded_future_attention_mask)
-        # Reshape agents back
-        # [batch_size, num_agents, num_future_trajectories, d_model]
-        future_agents = future_agents.reshape(
-            batch_size, num_agents, num_future_trajectories, -1
-        )
+            future_agents, future_agents_valid)
 
-        # [batch_size, num_agents, num_future_trajectories, d_model]
-        future_agents = self.dropout2(future_agents)
-        future_agents = self.norm2(future_agents + residual_future_agents)
+        # ---- Sub-layer 1: agent-axis self-attention ----
+        # Per mode, the K parallel slices each run self-attention over A agents.
+        residual = future_agents
+        x = future_agents.swapaxes(1, 2).reshape(B * K, A, D)
+        x = self_attn_capture(self.agent_self_attention, x, agent_mask,
+                              captured, "agent_self", B, K)
+        future_agents = self.norm_agent(
+            self.dropout(x.reshape(B, K, A, D).swapaxes(1, 2)) + residual)
 
-        # [batch_size, num_agents, num_future_trajectories, d_model]
-        residual_future_agents = future_agents.clone()
-        future_agents = self.ffn(future_agents)
-        future_agents = self.dropout3(future_agents)
-        future_agents = self.norm3(future_agents + residual_future_agents)
+        # ---- Sub-layer 2: cross-attention to encoded past ----
+        # For each agent, the K mode queries attend over that agent's past timeline.
+        residual = future_agents
+        kv = encoded_agents.reshape(B * A, T_past, D)
+        q = future_agents.reshape(B * A, K, D)
+        x = cross_attn_capture(self.past_cross_attention, kv, q, past_mask,
+                               captured, "mode_past", B, A)
+        future_agents = self.norm_past(
+            self.dropout(x.reshape(B, A, K, D)) + residual)
+
+        # ---- Sub-layer 3: position-wise feed-forward ----
+        residual = future_agents
+        future_agents = self.norm_ffn(self.dropout(self.ffn(future_agents)) + residual)
 
         return future_agents
 
 
 class PredictionDecoder(nn.Module):
     def __init__(self, num_layers, d_model, ffn_hidden, num_heads, drop_prob):
-        super(PredictionDecoder, self).__init__()
-        self.layers = nn.ModuleList([DecoderLayer(d_model=d_model,
-                                                  ffn_hidden=ffn_hidden,
-                                                  num_heads=num_heads,
-                                                  drop_prob=drop_prob)
-                                    for _ in range(num_layers)])
+        super().__init__()
+        self.layers = nn.ModuleList([
+            DecoderLayer(d_model=d_model, ffn_hidden=ffn_hidden,
+                         num_heads=num_heads, drop_prob=drop_prob)
+            for _ in range(num_layers)
+        ])
 
     def forward(self, encoded_agents, past_agents_valid,
                 future_agents, future_agents_valid, capture=False):
