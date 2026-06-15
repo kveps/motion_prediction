@@ -243,7 +243,8 @@ def sdc_endpoint_to_agent_local(x_curr, y_curr, sin_h, cos_h, x_end, y_end):
 # ===========================================================================
 # K-means centroid computation (offline, once per training-data version)
 # ===========================================================================
-def compute_centroids(dataset, num_centroids, max_samples=100_000, seed=0):
+def compute_centroids(dataset, num_centroids, max_samples=100_000, seed=0,
+                       progress_every_scenes=500):
     """Cluster training-set endpoints in agent-local frame into K centroids.
 
     Iterates through `dataset`, collects per-agent (lx, ly) endpoint
@@ -257,18 +258,29 @@ def compute_centroids(dataset, num_centroids, max_samples=100_000, seed=0):
         num_centroids: K.
         max_samples: cap on collected endpoints — kmeans cost grows ~ N*K.
         seed: random seed for kmeans init.
+        progress_every_scenes: print a progress line every N scenes
+            consumed. Set to 0 to disable.
 
     Returns:
         torch.Tensor [num_centroids, 2] of centroids in agent-local frame
         ([forward, left] meters).
     """
     # Lazy import — sklearn is only needed at training-prep time.
+    import time
     from sklearn.cluster import KMeans  # noqa: WPS433
 
     endpoints = []
     samples_seen = 0
+    t0 = time.time()
     for sample in dataset:
         samples_seen += 1
+        if progress_every_scenes and samples_seen % progress_every_scenes == 0:
+            dt = time.time() - t0
+            pct = 100.0 * len(endpoints) / max_samples
+            rate_s = samples_seen / max(dt, 1e-6)
+            print(f"  [{dt:6.1f}s] scenes={samples_seen:>6}  "
+                  f"endpoints={len(endpoints):>7,} ({pct:5.1f}% of cap)  "
+                  f"rate={rate_s:.1f} scenes/s", flush=True)
         agent_input  = sample['agent_input_continuous']   # [A, T_past, F]
         agent_target = sample['agent_target']             # [A, T_future, 4]
         target_valid = sample['agent_target_valid']       # [A, T_future]
